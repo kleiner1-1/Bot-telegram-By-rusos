@@ -1,5 +1,6 @@
 import os
 import threading
+import asyncio
 from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -8,52 +9,58 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
+# Flask para Render gratis
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def home(): return "Bot activo 24/7"
+def home(): return "Bot vivo 24/7"
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host='0.0.0.0', port=port)
+    app_flask.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 CONTACTO_1 = "@Lowwsad"
 
 SECCIONES = {
-    "archivos": {"nombre": "📁 Archivos", "comandos": ["📤 /subir", "📂 /misarchivos"]},
-    "herramientas": {"nombre": "🛠️ Herramientas", "comandos": ["🌤️ /clima", "🌐 /traducir"]},
-    "utilidades": {"nombre": "⚙️ Utilidades", "comandos": ["ℹ️ /info", "🆘 /ayuda"]}
+    "co": {"nombre": "🇨🇴 Colombia", "comandos": ["/co"]},
+    "ve": {"nombre": "🇻🇪 Venezuela", "comandos": ["/ve"]},
+    "ec": {"nombre": "🇪🇨 Ecuador", "comandos": ["/ec"]},
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    nombre = user.username or user.first_name
-    texto = f"**BOT DE CONSULTAS MULTI-PAÍS**\n\nSISTEMA ENFOCADO EN CONSULTAS RÁPIDAS Y ORGANIZADAS DE INFORMACIÓN EN DISTINTOS PAÍSES.\n\n**TU INFORMACIÓN**\n\n🆔 **ID:** `{user.id}`\n👤 **USUARIO:** {nombre}\n🎭 **ROL:** `FREE`\n💳 **CRÉDITOS:** `0`\n👑 **PREMIUM:** ❌\n\nUSA /sys PARA VER LOS COMANDOS DISPONIBLES PARA TI.\n\n**COMPRA DE CRÉDITOS**\nPARA COMPRAR CRÉDITOS CONTACTAR CON:\n{CONTACTO_1} {CONTACTO_2}"
-    await update.message.reply_text(texto, parse_mode="Markdown")
+    u = update.effective_user
+    name = u.username or u.first_name
+    txt = f"**BOT DE CONSULTAS MULTI-PAÍS**\n\nSISTEMA ENFOCADO EN CONSULTAS RÁPIDAS Y ORGANIZADAS DE INFORMACIÓN EN DISTINTOS PAÍSES.\n\n**TU INFORMACIÓN**\n\n🆔 **ID:** `{u.id}`\n👤 **USUARIO:** {name}\n🎭 **ROL:** `FREE`\n💳 **CRÉDITOS:** `0`\n👑 **PREMIUM:** ❌\n\nUSA /sys PARA VER LOS COMANDOS DISPONIBLES PARA TI.\n\n**COMPRA DE CRÉDITOS**\nPARA COMPRAR CRÉDITOS CONTACTAR CON:\n{CONTACTO_1} {CONTACTO_2}"
+    await update.message.reply_text(txt, parse_mode="Markdown")
 
-async def sys_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(v["nombre"], callback_data=f"seccion_{k}")] for k,v in SECCIONES.items()]
-    await update.message.reply_text("👋 **Menú Principal**\n\nSelecciona una sección:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [[InlineKeyboardButton(v["nombre"], callback_data=f"s_{k}")] for k,v in SECCIONES.items()]
+    await update.message.reply_text("👋 **Menú Principal**", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-async def boton_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("seccion_"):
-        key = data.replace("seccion_", "")
-        texto = "\n".join(SECCIONES[key]["comandos"])
-        keyboard = [[InlineKeyboardButton("⬅️ Volver", callback_data="volver")]]
-        await query.edit_message_text(f"{SECCIONES[key]['nombre']}\n\n{texto}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    elif data == "volver":
-        keyboard = [[InlineKeyboardButton(v["nombre"], callback_data=f"seccion_{k}")] for k,v in SECCIONES.items()]
-        await query.edit_message_text("👋 **Menú Principal**\n\nSelecciona una sección:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data.startswith("s_"):
+        k = q.data.replace("s_","")
+        kb = [[InlineKeyboardButton("⬅️ Volver", callback_data="back")]]
+        await q.edit_message_text(f"{SECCIONES[k]['nombre']}\n\nComando: {SECCIONES[k]['comandos'][0]}", reply_markup=InlineKeyboardMarkup(kb))
+    else:
+        kb = [[InlineKeyboardButton(v["nombre"], callback_data=f"s_{k}")] for k,v in SECCIONES.items()]
+        await q.edit_message_text("👋 **Menú Principal**", reply_markup=InlineKeyboardMarkup(kb))
 
-def main():
-    print(f"Token cargado: {'SI' if TOKEN else 'NO - FALTA BOT_TOKEN EN RENDER'}")
+def run_bot():
+    # ESTA LINEA ARREGLA EL ERROR DE TU CAPTURA
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    if not TOKEN:
+        print("ERROR: BOT_TOKEN no esta en Environment")
+        return
+
+    print(f"TOKEN OK - Iniciando bot...")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("sys", sys_command))
-    app.add_handler(CallbackQueryHandler(boton_callback))
+    app.add_handler(CommandHandler("sys", sys_cmd))
+    app.add_handler(CallbackQueryHandler(btn))
     app.run_polling()
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    main()
+    run_bot()
