@@ -3,13 +3,13 @@ import threading
 import asyncio
 from flask import Flask
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Flask para Render gratis
+# Flask para Render
 app_flask = Flask(__name__)
 @app_flask.route('/')
 def home(): return "Bot vivo 24/7"
@@ -19,10 +19,18 @@ def run_flask():
 CONTACTO_1 = "@Lowwsad"
 
 SECCIONES = {
-    "co": {"nombre": "🇨🇴 Colombia", "comandos": ["/co"]},
-    "ve": {"nombre": "🇻🇪 Venezuela", "comandos": ["/ve"]},
-    "ec": {"nombre": "🇪🇨 Ecuador", "comandos": ["/ec"]},
+    "co": {"nombre": "🇨🇴 Colombia", "comandos": ["/co - Consulta Colombia"]},
+    "ve": {"nombre": "🇻🇪 Venezuela", "comandos": ["/ve - Consulta Venezuela"]},
+    "ec": {"nombre": "🇪🇨 Ecuador", "comandos": ["/ec - Consulta Ecuador"]},
 }
+
+# ESTO ES LO QUE FALTABA - CONFIGURA EL MENU DE COMANDOS SOLO
+async def set_commands(app: Application):
+    await app.bot.set_my_commands([
+        BotCommand("start", "Ver mi informacion y creditos"),
+        BotCommand("sys", "Ver menu de comandos"),
+    ])
+    print("Comandos /start y /sys configurados en Telegram")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
@@ -32,7 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(v["nombre"], callback_data=f"s_{k}")] for k,v in SECCIONES.items()]
-    await update.message.reply_text("👋 **Menú Principal**", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    await update.message.reply_text("👋 **Menú Principal**\n\nSelecciona país:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -46,19 +54,16 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("👋 **Menú Principal**", reply_markup=InlineKeyboardMarkup(kb))
 
 def run_bot():
-    # ESTA LINEA ARREGLA EL ERROR DE TU CAPTURA
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
     if not TOKEN:
         print("ERROR: BOT_TOKEN no esta en Environment")
         return
-
-    print(f"TOKEN OK - Iniciando bot...")
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(set_commands).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("sys", sys_cmd))
     app.add_handler(CallbackQueryHandler(btn))
+    print("Bot iniciado...")
     app.run_polling()
 
 if __name__ == "__main__":
