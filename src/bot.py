@@ -17,6 +17,7 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 CONTACTO_1 = "@Lowwsad"
+CONTACTO_2 = "@Lowwsad"
 
 SECCIONES = {
     "co": {"nombre": "🇨🇴 Colombia", "comandos": ["/co - Consulta Colombia"]},
