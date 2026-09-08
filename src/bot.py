@@ -1,4 +1,5 @@
-import os, threading, requests, urllib3, json, time
+import os, threading, requests, urllib3, json, time, re
+from html import unescape
 from datetime import datetime
 from flask import Flask
 from dotenv import load_dotenv
@@ -8,10 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-# --- OWNER CONFIG ---
 OWNER_ID = 8768048667
-ADMINS = [OWNER_ID]
-
 COST_SISBEN = 5
 COST_RUNT = 10
 DB_FILE = "users.json"
@@ -67,7 +65,7 @@ async def setup_commands(app: Application):
         BotCommand("sys", "Panel por paises"),
         BotCommand("mycoins", "Ver saldo"),
         BotCommand("sisben", "Consultar SISBEN"),
-        BotCommand("runt", "Consultar RUNT"),
+        BotCommand("runt", "Consultar RUNT (solo placa)"),
     ]
     await app.bot.set_my_commands(user_commands)
     admin_commands = user_commands + [
@@ -81,7 +79,7 @@ async def setup_commands(app: Application):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d=get_user(update.effective_user.id)
     plan = "OWNER ∞" if update.effective_user.id==OWNER_ID else ("VIP" if is_vip(d) else "FREE")
-    await update.message.reply_text(f"[ ACCESS GRANTED ]\n━━━━━━━━━━━━━━━\nID : {update.effective_user.id}\nPLAN : {plan}\nCOINS : {d['coins']}\n━━━━━━━━━━━━━━━\n> /sys para panel por paises")
+    await update.message.reply_text(f"[ ACCESS GRANTED ]\n━━━━━━━━━━━━━━━\nID : {update.effective_user.id}\nPLAN : {plan}\nCOINS : {d['coins']}\n━━━━━━━━━━━━━━━\n> /sys panel por paises")
 
 async def mycoins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d=get_user(update.effective_user.id)
@@ -116,7 +114,6 @@ async def addvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db[tid]["vip_until"]=base+dias*86400
     save_db(db)
     await update.message.reply_text(f"[ VIP ] {tid} -> {dias} dias")
-
 async def remvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!=OWNER_ID: return
     db=load_db()
@@ -145,6 +142,7 @@ async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
+# --- SISBEN (CON CEDULA) ---
 async def do_sisben(target, user_id, cedula):
     if not can_afford(user_id, COST_SISBEN):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_SISBEN}")
@@ -157,7 +155,6 @@ async def do_sisben(target, user_id, cedula):
         await target.message.reply_text(f"[ SISBEN ] {cedula}\n━━━━━━━━━━━━━━━\n{r.text[:3000]}")
     except Exception as e:
         await target.message.reply_text(f"Error: {e}")
-
 async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         context.user_data['awaiting']='sisben'
@@ -165,24 +162,50 @@ async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_sisben(update, update.effective_user.id, context.args[0])
 
-async def do_runt(target, user_id, placa, cedula):
+# --- RUNT SOLO PLACA ---
+async def do_runt(target, user_id, placa):
     if not can_afford(user_id, COST_RUNT):
-        await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT}")
+        await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
         return
+    placa = placa.upper().strip()
+    await target.message.reply_text(f"[ RUNT ] Consultando {placa}... ⏳")
     try:
-        url=f"https://historialrunt.org/api/consultar.php?placa={placa.upper()}&documento={cedula}"
-        r=requests.get(url, headers={"Accept":"application/json","User-Agent":"Mozilla/5.0"}, timeout=30)
-        deduct(user_id, COST_RUNT)
-        await target.message.reply_text(f"[ RUNT ] {placa.upper()}\n━━━━━━━━━━━━━━━\n{r.text[:3000]}")
+        s=requests.Session()
+        s.headers.update({"User-Agent":"Mozilla/5.0","Referer":"https://www.runt.com.co/"})
+        # intento API v2 solo placa
+        url=f"https://api.historialrunt.org/v2/consulta?placa={placa}"
+        r=s.get(url, timeout=20)
+        if r.status_code==200:
+            try:
+                data=r.json()
+                if data.get("success")==True or "marca" in r.text.lower():
+                    deduct(user_id, COST_RUNT)
+                    txt=f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\nPlaca: {data.get('placa',placa)}\nMarca: {data.get('marca','N/A')}\nLinea: {data.get('linea','N/A')}\nModelo: {data.get('modelo','N/A')}\nColor: {data.get('color','N/A')}\nEstado: {data.get('estado','N/A')}"
+                    await target.message.reply_text(txt)
+                    return
+            except:
+                pass
+        # fallback oficial
+        url2=f"https://www.runt.com.co/consultaCiudadana/consultaVehiculo.php?placa={placa}"
+        r2=s.get(url2, timeout=20, verify=False)
+        if len(r2.text)>200:
+            deduct(user_id, COST_RUNT)
+            clean=re.sub('<[^<]+?>', '\n', r2.text)
+            clean=unescape(clean)
+            clean="\n".join([l.strip() for l in clean.splitlines() if len(l.strip())>2])[:3500]
+            await target.message.reply_text(f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\n{clean}")
+            return
     except Exception as e:
-        await target.message.reply_text(f"Error: {e}")
+        await target.message.reply_text(f"Error RUNT: {e}")
+        return
+    await target.message.reply_text(f"[ RUNT ] {placa}\n━━━━━━━━━━━━━━━\nNo se encontró o RUNT caído")
 
 async def runt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args)<2:
+    if len(context.args)<1:
         context.user_data['awaiting']='runt'
-        await update.message.reply_text(f"RUNT {COST_RUNT} coins\nPLACA CEDULA")
+        await update.message.reply_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo enviame la PLACA\nEj: OMG650")
         return
-    await do_runt(update, update.effective_user.id, context.args[0], context.args[1])
+    await do_runt(update, update.effective_user.id, context.args[0])
 
 async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
@@ -193,10 +216,10 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code=data.split("_")[1]
         d=get_user(uid)
         if code=="CO":
-            txt=f"[ 🇨🇴 COLOMBIA ]\n━━━━━━━━━━━━━━━\nCoins: {d['coins']}\n━━━━━━━━━━━━━━━\n2 módulos disponibles"
+            txt=f"[ 🇨🇴 COLOMBIA ]\n━━━━━━━━━━━━━━━\nCoins: {d['coins']}\n━━━━━━━━━━━━━━━\n2 módulos"
             kb=[
                 [InlineKeyboardButton(f"› SISBEN / RUI ({COST_SISBEN})", callback_data="ask_sisben")],
-                [InlineKeyboardButton(f"› RUNT HISTORIAL ({COST_RUNT})", callback_data="ask_runt")],
+                [InlineKeyboardButton(f"› RUNT - SOLO PLACA ({COST_RUNT})", callback_data="ask_runt")],
                 [InlineKeyboardButton("‹ Volver", callback_data="back_countries")],
             ]
         else:
@@ -219,7 +242,7 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"🇨🇴 SISBEN ({COST_SISBEN} coins)\nEnviame cedula", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
     elif data=="ask_runt":
         context.user_data['awaiting']='runt'
-        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\nPLACA y CEDULA", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
+        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting=context.user_data.get('awaiting')
@@ -229,10 +252,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting']=None
         await do_sisben(update, update.effective_user.id, text)
     elif awaiting=='runt':
-        parts=text.split()
-        if len(parts)>=2:
-            context.user_data['awaiting']=None
-            await do_runt(update, update.effective_user.id, parts[0], parts[1])
+        context.user_data['awaiting']=None
+        await do_runt(update, update.effective_user.id, text.split()[0])
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
@@ -248,7 +269,7 @@ def main():
     app.add_handler(CommandHandler("runt", runt_cmd))
     app.add_handler(CallbackQueryHandler(btn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print(f"Bot iniciado OWNER {OWNER_ID}")
+    print(f"Bot iniciado OWNER {OWNER_ID} - RUNT SOLO PLACA")
     app.run_polling()
 
 if __name__=="__main__":
