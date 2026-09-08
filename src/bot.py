@@ -1,11 +1,23 @@
 import os
 import asyncio
+import threading
+from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+
+# Mini servidor web para que Render Gratis no se apague
+app_flask = Flask(__name__)
+@app_flask.route('/')
+def home():
+    return "Bot activo 24/7"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host='0.0.0.0', port=port)
 
 SECCIONES = {
     "archivos": {"nombre": "📁 Archivos", "comandos": ["/subir", "/misarchivos", "/descargar"]},
@@ -47,6 +59,7 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
     try:
         asyncio.get_event_loop()
     except RuntimeError:
