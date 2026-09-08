@@ -33,7 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     name = u.username or u.first_name
     txt = (
-        f"**BOT DE CONSULTAS MULTI-PAÍS**\n\n"
+        f"**BOT DE DOXEO MULTI-PAÍS**\n\n"
         f"SISTEMA ENFOCADO EN CONSULTAS RÁPIDAS Y ORGANIZADAS DE INFORMACIÓN EN DISTINTOS PAÍSES.\n\n"
         f"**TU INFORMACIÓN**\n\n"
         f"🆔 **ID:** `{u.id}`\n"
