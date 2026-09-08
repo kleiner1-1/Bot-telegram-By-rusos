@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Mini servidor web para que Render Gratis no se apague
+# --- Servidor web para que funcione GRATIS en Render ---
 app_flask = Flask(__name__)
 @app_flask.route('/')
 def home():
@@ -18,51 +18,66 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
+# -------------------------------------------------------
+
+# Configura tus contactos de venta
+CONTACTO_1 = "@Sumersion"
+CONTACTO_2 = "@Indolido"
 
 SECCIONES = {
-    "archivos": {"nombre": "📁 Archivos", "comandos": ["/subir", "/misarchivos", "/descargar"]},
-    "herramientas": {"nombre": "🛠️ Herramientas", "comandos": ["/clima", "/traducir", "/qr"]},
-    "utilidades": {"nombre": "⚙️ Utilidades", "comandos": ["/info", "/ayuda", "/contacto"]}
+    "archivos": {
+        "nombre": "📁 Archivos", 
+        "comandos": ["📤 /subir - Subir archivo", "📂 /misarchivos - Ver mis archivos"]
+    },
+    "herramientas": {
+        "nombre": "🛠️ Herramientas", 
+        "comandos": ["🌤️ /clima - Ver clima", "🌐 /traducir - Traducir texto"]
+    },
+    "utilidades": {
+        "nombre": "⚙️ Utilidades", 
+        "comandos": ["ℹ️ /info - Info del bot", "🆘 /ayuda - Ayuda"]
+    }
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    nombre = user.username if user.username else user.first_name
+    
+    texto = (
+        f"**BOT DE CONSULTAS MULTI-PAÍS**\n\n"
+        f"SISTEMA ENFOCADO EN CONSULTAS RÁPIDAS Y ORGANIZADAS DE INFORMACIÓN EN DISTINTOS PAÍSES.\n\n"
+        f"**TU INFORMACIÓN**\n\n"
+        f"🆔 **ID:** `{user.id}`\n"
+        f"👤 **USUARIO:** {nombre}\n"
+        f"🎭 **ROL:** `FREE`\n"
+        f"💳 **CRÉDITOS:** `0`\n"
+        f"👑 **PREMIUM:** ❌\n\n"
+        f"USA /sys PARA VER LOS COMANDOS DISPONIBLES PARA TI.\n\n"
+        f"**COMPRA DE CRÉDITOS**\n"
+        f"PARA COMPRAR CRÉDITOS CONTACTAR CON:\n"
+        f"{CONTACTO_1}  {CONTACTO_2}"
+    )
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+async def sys_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton(SECCIONES["archivos"]["nombre"], callback_data="seccion_archivos")],
         [InlineKeyboardButton(SECCIONES["herramientas"]["nombre"], callback_data="seccion_herramientas")],
         [InlineKeyboardButton(SECCIONES["utilidades"]["nombre"], callback_data="seccion_utilidades")],
     ]
-    await update.message.reply_text("👋 *Bienvenido al Menú Principal*\n\nSelecciona una sección:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await update.message.reply_text(
+        "👋 **Bienvenido al Menú Principal**\n\nSelecciona una sección:", 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode="Markdown"
+    )
 
 async def boton_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+
     if data.startswith("seccion_"):
         key = data.replace("seccion_", "")
         seccion = SECCIONES.get(key)
         texto = "\n".join(seccion["comandos"])
         keyboard = [[InlineKeyboardButton("⬅️ Volver al Menú", callback_data="volver_menu")]]
-        await query.edit_message_text(f"{seccion['nombre']}\n\n{texto}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    elif data == "volver_menu":
-        keyboard = [
-            [InlineKeyboardButton(SECCIONES["archivos"]["nombre"], callback_data="seccion_archivos")],
-            [InlineKeyboardButton(SECCIONES["herramientas"]["nombre"], callback_data="seccion_herramientas")],
-            [InlineKeyboardButton(SECCIONES["utilidades"]["nombre"], callback_data="seccion_utilidades")],
-        ]
-        await query.edit_message_text("👋 *Bienvenido al Menú Principal*\n\nSelecciona una sección:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(boton_callback))
-    print("Bot corriendo...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    main()
