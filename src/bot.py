@@ -16,7 +16,6 @@ COST_RUC = 10
 COST_DNIPE = 8
 DB_FILE = "users.json"
 
-# KEY PERU
 API_KEY_DECOLECTA = "sk_19272.V8Z6VdfAkdjg5teDriucciqmHRi9rbkK"
 
 COUNTRIES = {
@@ -84,7 +83,6 @@ def consulta_dni_pe(dni):
     except Exception as e:
         return {"error": str(e)}
 
-# ================= SETUP COMMANDS =================
 async def setup_commands(app: Application):
     user_commands = [
         BotCommand("start", "Acceso principal"),
@@ -171,7 +169,7 @@ async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
-# --- SISBEN (CON CEDULA) ---
+# --- SISBEN ---
 async def do_sisben(target, user_id, cedula):
     if not can_afford(user_id, COST_SISBEN):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_SISBEN}")
@@ -191,7 +189,7 @@ async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_sisben(update, update.effective_user.id, context.args[0])
 
-# --- RUNT SOLO PLACA (TU ORIGINAL) ---
+# --- RUNT ---
 async def do_runt(target, user_id, placa):
     if not can_afford(user_id, COST_RUNT):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
@@ -234,7 +232,7 @@ async def runt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_runt(update, update.effective_user.id, context.args[0])
 
-# --- RUC PE ---
+# --- RUC PE CORREGIDO ---
 async def do_ruc(target, user_id, ruc):
     if not can_afford(user_id, COST_RUC):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUC} coins")
@@ -244,11 +242,22 @@ async def do_ruc(target, user_id, ruc):
     if data.get("error"):
         await target.message.reply_text(f"[ RUC - {ruc} ] ❌ {data.get('error')}")
         return
-    if not data.get("razon_social") and not data.get("numero"):
+    razon = data.get('razon_social') or data.get('nombre_o_razon_social') or data.get('company_name')
+    if not razon:
         await target.message.reply_text(f"[ RUC - {ruc} ] ❌ No encontrado\n{json.dumps(data)[:800]}")
         return
     deduct(user_id, COST_RUC)
-    txt = f"[ RUC - {ruc} ] ✅\n━━━━━━━━━━━━━━━\n🏢 {data.get('razon_social','N/A')}\n📊 ESTADO: {data.get('estado','N/A')}\n📋 CONDICION: {data.get('condicion','N/A')}\n📍 {data.get('direccion','N/A')}\n━━━━━━━━━━━━━━━"
+    txt = f"""[ RUC - {ruc} ] ✅
+━━━━━━━━━━━━━━━
+🏢 RAZÓN: {razon}
+📄 RUC: {data.get('numero', ruc)}
+📊 ESTADO: {data.get('estado', 'N/A')}
+📋 CONDICIÓN: {data.get('condicion', 'N/A')}
+📍 DIR: {data.get('direccion', 'N/A')}
+🗺️ {data.get('departamento','')} - {data.get('provincia','')} - {data.get('distrito','')}
+━━━━━━━━━━━━━━━
+💼 {data.get('actividad_economica','')}
+━━━━━━━━━━━━━━━"""
     await target.message.reply_text(txt[:4000])
 
 async def ruc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -258,25 +267,44 @@ async def ruc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_ruc(update, update.effective_user.id, context.args[0])
 
-# --- DNI PE ---
+# --- DNI PE CORREGIDO - AHORA SI BONITO ---
 async def do_dnipe(target, user_id, dni):
     if not can_afford(user_id, COST_DNIPE):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_DNIPE} coins")
         return
     await target.message.reply_text(f"[ DNI PE ] Consultando {dni}... ⏳")
     data = consulta_dni_pe(dni)
-    if data.get("error") or (not data.get("nombres") and not data.get("nombre_completo")):
-        await target.message.reply_text(f"[ DNI PE - {dni} ] ❌ {data.get('error') or 'No encontrado'}\n{str(data)[:800]}")
+
+    # Formato Decollecta real: first_name, first_last_name, second_last_name, full_name
+    nombres = data.get("nombres") or data.get("first_name") or ""
+    paterno = data.get("apellido_paterno") or data.get("first_last_name") or ""
+    materno = data.get("apellido_materno") or data.get("second_last_name") or ""
+    completo = data.get("nombre_completo") or data.get("full_name") or f"{paterno} {materno} {nombres}"
+    doc_num = data.get("document_number") or data.get("numero") or dni
+
+    if not nombres and "full_name" not in data and "first_name" not in data:
+        await target.message.reply_text(f"[ DNI PE - {dni} ] ❌ No encontrado\n{json.dumps(data)[:800]}")
         return
+
     deduct(user_id, COST_DNIPE)
-    completo = data.get("nombre_completo") or f"{data.get('nombres','')} {data.get('apellido_paterno','')} {data.get('apellido_materno','')}"
-    txt = f"[ DNI PE - {dni} ] ✅\n━━━━━━━━━━━━━━━\n👤 {completo}\n🪪 DNI: {dni}\n━━━━━━━━━━━━━━━"
+
+    txt = f"""[ DNI PE - {doc_num} ] ✅
+━━━━━━━━━━━━━━━
+👤 NOMBRE COMPLETO: {completo}
+📝 NOMBRES: {nombres}
+👨 AP. PATERNO: {paterno}
+👩 AP. MATERNO: {materno}
+🪪 DNI: {doc_num}
+━━━━━━━━━━━━━━━
+✅ RENIEC VERIFICADO
+━━━━━━━━━━━━━━━"""
+
     await target.message.reply_text(txt[:4000])
 
 async def dnipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         context.user_data['awaiting']='dnipe'
-        await update.message.reply_text(f"🇵🇪 DNI PE ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678")
+        await update.message.reply_text(f"🇵🇪 DNI PE ({COST_DNIPE} coins)\nEnviame DNI\nEj: 70985035")
         return
     await do_dnipe(update, update.effective_user.id, context.args[0])
 
@@ -329,7 +357,7 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"🇵🇪 RUC ({COST_RUC} coins)\nEnviame RUC\nEj: 20601030013", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
     elif data=="ask_dnipe":
         context.user_data['awaiting']='dnipe'
-        await q.edit_message_text(f"🇵🇪 DNI ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
+        await q.edit_message_text(f"🇵🇪 DNI ({COST_DNIPE} coins)\nEnviame DNI\nEj: 70985035", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting=context.user_data.get('awaiting')
@@ -365,7 +393,7 @@ def main():
     app.add_handler(CommandHandler("dniperu", dnipe_cmd))
     app.add_handler(CallbackQueryHandler(btn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print(f"Bot iniciado OWNER {OWNER_ID} - CON PERU AGREGADO")
+    print(f"Bot iniciado OWNER {OWNER_ID} - PERU FIXED")
     app.run_polling()
 
 if __name__=="__main__":
