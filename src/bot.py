@@ -61,13 +61,11 @@ def get_plan(user_id, data=None):
     if user_id == OWNER_ID: return "OWNER ∞"
     if data is None: data = get_user(user_id)
     return "VIP 💎" if is_vip(data) else "FREE"
-
 def can_afford(user_id, cost):
     if user_id == OWNER_ID: return True
     data = get_user(user_id)
     if is_vip(data): return True
     return data.get("coins", 0) >= cost
-
 def deduct(user_id, cost):
     if user_id == OWNER_ID: return True
     with db_lock:
@@ -79,7 +77,6 @@ def deduct(user_id, cost):
         save_db(db)
         return True
 
-# --- TECLADOS ESTÉTICOS ---
 def main_keyboard(user_id):
     buy_url = f"https://t.me/{OWNER_USERNAME}"
     buttons = [
@@ -118,7 +115,6 @@ async def check_channel(context, user_id):
     except:
         return True
 
-# --- START CON CANAL + 3 COINS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user: return
@@ -314,7 +310,7 @@ async def btn(update, context):
 
 def main():
     if not TOKEN:
-        print("❌ FALTA BOT_TOKEN en Environment de Render")
+        print("❌ FALTA BOT_TOKEN en Environment de Render - El bot no puede iniciar")
         return
     threading.Thread(target=run_flask, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
@@ -330,8 +326,8 @@ def main():
     app.add_handler(CommandHandler("remvip", remvip_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CallbackQueryHandler(btn))
-    print(f"Bot @botdoxcol iniciado OWNER {OWNER_ID}")
-    app.run_polling()
+    print(f"Bot iniciado OWNER {OWNER_ID} - Fix _polling_cleanup_cb aplicado")
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
     main()
