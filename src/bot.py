@@ -11,10 +11,10 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 OWNER_ID = 8768048667
 COST_SISBEN = 5
-COST_RUNT = 4
-COST_RUC = 3
+COST_RUNT = 10
+COST_RUC = 10
 COST_DNIPE = 8
-COST_CREDICUOTAS = 4  # <-- NUEVO: Costo para consulta Credicuotas
+COST_CREDICUOTAS = 12
 DB_FILE = "users.json"
 
 # KEY PERU
@@ -26,7 +26,7 @@ COUNTRIES = {
     "EC": {"name": "🇪🇨 ECUADOR"},
     "VE": {"name": "🇻🇪 VENEZUELA"},
     "PE": {"name": "🇵🇪 PERU"},
-    "AR": {"name": "🇦🇷 ARGENTINA"},  # <-- NUEVO
+    "AR": {"name": "🇦🇷 ARGENTINA"},
     "OT": {"name": "🌎 OTROS"},
 }
 
@@ -87,37 +87,45 @@ def consulta_dni_pe(dni):
         return {"error": str(e)}
 
 # ================= API CREDICUOTAS (ARGENTINA) =================
-def consulta_credicuotas(customer_id=None, phone=None, document=None):
-    """
-    Consulta el endpoint de Credicuotas Argentina
-    """
+def consulta_credicuotas(documento=None, telefono=None, customer_id=None):
     url = "https://clientes.credicuotas.com.ar/v1/onboarding/resolvecustomers/"
     
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://clientes.credicuotas.com.ar",
+        "Referer": "https://clientes.credicuotas.com.ar/",
     }
     
     payload = {}
+    if documento:
+        payload["document"] = str(documento).strip()
+    if telefono:
+        payload["phone"] = str(telefono).strip()
     if customer_id:
-        payload["customerId"] = customer_id
-    if phone:
-        payload["phone"] = phone
-    if document:
-        payload["document"] = document
+        payload["customerId"] = str(customer_id).strip()
     
-    # Si no hay parámetros, usar documento vacío o el que pase el usuario
     if not payload:
-        return {"error": "Debes proporcionar al menos un parámetro (DNI, teléfono o ID)"}
+        return {"error": "Debes proporcionar al menos un parámetro (documento, teléfono o customerId)"}
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
-        return {
-            "success": response.status_code == 200,
-            "status_code": response.status_code,
-            "data": response.json() if response.status_code == 200 else response.text
-        }
+        
+        if response.status_code == 200:
+            return {
+                "success": True,
+                "status_code": response.status_code,
+                "data": response.json()
+            }
+        else:
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": "Error en la consulta",
+                "data": response.text
+            }
+            
     except Exception as e:
         return {"error": str(e)}
 
@@ -131,7 +139,7 @@ async def setup_commands(app: Application):
         BotCommand("runt", "Consultar RUNT (solo placa)"),
         BotCommand("ruc", "Consultar RUC PE 🇵🇪"),
         BotCommand("dnipe", "Consultar DNI PE 🇵🇪"),
-        BotCommand("credicuotas", "Consultar Credicuotas 🇦🇷"),  # <-- NUEVO
+        BotCommand("credicuotas", "Consultar Credicuotas 🇦🇷"),
     ]
     await app.bot.set_my_commands(user_commands)
     admin_commands = user_commands + [
@@ -180,6 +188,7 @@ async def addvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db[tid]["vip_until"]=base+dias*86400
     save_db(db)
     await update.message.reply_text(f"[ VIP ] {tid} -> {dias} dias")
+
 async def remvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!=OWNER_ID: return
     db=load_db()
@@ -188,6 +197,7 @@ async def remvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db[tid]["vip_until"]=0
         save_db(db)
         await update.message.reply_text(f"[ VIP REMOVIDO ] {tid}")
+
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!=OWNER_ID: return
     db=load_db()
@@ -205,7 +215,7 @@ async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🇲🇽 MEXICO", callback_data="country_MX"),
          InlineKeyboardButton("🇪🇨 ECUADOR", callback_data="country_EC")],
         [InlineKeyboardButton("🇻🇪 VENEZUELA", callback_data="country_VE"),
-         InlineKeyboardButton("🇦🇷 ARGENTINA", callback_data="country_AR")],  # <-- NUEVO
+         InlineKeyboardButton("🇦🇷 ARGENTINA", callback_data="country_AR")],
         [InlineKeyboardButton("🌎 OTROS", callback_data="country_OT")],
     ]
     await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
@@ -223,6 +233,7 @@ async def do_sisben(target, user_id, cedula):
         await target.message.reply_text(f"[ SISBEN ] {cedula}\n━━━━━━━━━━━━━━━\n{r.text[:3000]}")
     except Exception as e:
         await target.message.reply_text(f"Error: {e}")
+
 async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         context.user_data['awaiting']='sisben'
@@ -230,7 +241,7 @@ async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_sisben(update, update.effective_user.id, context.args[0])
 
-# --- RUNT SOLO PLACA (TU ORIGINAL) ---
+# --- RUNT SOLO PLACA ---
 async def do_runt(target, user_id, placa):
     if not can_afford(user_id, COST_RUNT):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
@@ -319,45 +330,65 @@ async def dnipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_dnipe(update, update.effective_user.id, context.args[0])
 
-# --- CREDICUOTAS AR (NUEVO) ---
+# --- CREDICUOTAS AR (CORREGIDO) ---
 async def do_credicuotas(target, user_id, documento):
     if not can_afford(user_id, COST_CREDICUOTAS):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_CREDICUOTAS} coins")
         return
+    
     await target.message.reply_text(f"[ CREDICUOTAS ] Consultando {documento}... ⏳")
     
-    # Detectar si es DNI, teléfono o ID
-    doc_clean = documento.strip()
-    params = {}
-    
-    # Si es solo números y tiene 7-8 dígitos, probable sea DNI
-    if doc_clean.isdigit() and 7 <= len(doc_clean) <= 8:
-        params["document"] = doc_clean
-    # Si empieza con + o tiene 10+ dígitos, es teléfono
-    elif doc_clean.startswith("+") or (doc_clean.isdigit() and len(doc_clean) >= 10):
-        params["phone"] = doc_clean
-    else:
-        params["customerId"] = doc_clean
-    
-    result = consulta_credicuotas(**params)
+    result = consulta_credicuotas(documento=documento)
     
     if result.get("error"):
         await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\n{result.get('error')}")
         return
     
-    if not result.get("success"):
-        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nStatus: {result.get('status_code')}\n{str(result.get('data', 'Error desconocido'))[:800]}")
+    if not result.get("success") or result.get("status_code") != 200:
+        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nStatus: {result.get('status_code')}\nNo encontrado")
+        return
+    
+    data = result.get("data", [])
+    
+    # Si devuelve lista vacía
+    if not data or len(data) == 0:
+        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nNo se encontraron datos")
         return
     
     deduct(user_id, COST_CREDICUOTAS)
-    data = result.get("data", {})
     
-    # Formatear respuesta según la estructura que devuelva
-    txt = f"[ CREDICUOTAS - {documento} ] ✅\n━━━━━━━━━━━━━━━\n"
-    txt += f"```json\n{json.dumps(data, indent=2, ensure_ascii=False)}\n```"
-    txt += f"\n━━━━━━━━━━━━━━━"
-    
-    await target.message.reply_text(txt[:4000])
+    # Formatear cada resultado (puede devolver múltiples)
+    for item in data:
+        cuit = item.get("cuit", "N/A")
+        nombre = item.get("nombrecompleto", "N/A")
+        dni = item.get("dni", "N/A")
+        fecha_nac = item.get("fechanacimiento", "N/A")
+        sexo = item.get("sexo", "N/A")
+        
+        # Calcular edad si hay fecha
+        edad = "N/A"
+        if fecha_nac and fecha_nac != "N/A":
+            try:
+                fecha = datetime.strptime(fecha_nac, "%Y-%m-%d")
+                hoy = datetime.now()
+                edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
+            except:
+                pass
+        
+        sexo_icon = "👩" if sexo == "F" else "👨" if sexo == "M" else "👤"
+        
+        txt = f"[ 🇦🇷 CREDICUOTAS - {dni} ] ✅\n"
+        txt += f"━━━━━━━━━━━━━━━\n"
+        txt += f"{sexo_icon} Nombre: {nombre}\n"
+        txt += f"🪪 DNI: {dni}\n"
+        txt += f"🏢 CUIT: {cuit}\n"
+        txt += f"📅 Nacimiento: {fecha_nac}"
+        if edad != "N/A":
+            txt += f" ({edad} años)"
+        txt += f"\n⚧ Sexo: {'Femenino' if sexo == 'F' else 'Masculino' if sexo == 'M' else sexo}\n"
+        txt += f"━━━━━━━━━━━━━━━"
+        
+        await target.message.reply_text(txt[:4000])
 
 async def credicuotas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -388,7 +419,7 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(f"› DNI RENIEC ({COST_DNIPE})", callback_data="ask_dnipe")],
                 [InlineKeyboardButton("‹ Volver", callback_data="back_countries")],
             ]
-        elif code=="AR":  # <-- NUEVO: Menú Argentina
+        elif code=="AR":
             txt=f"[ 🇦🇷 ARGENTINA ]\n━━━━━━━━━━━━━━━\nCoins: {d['coins']}\n━━━━━━━━━━━━━━━\n1 módulo"
             kb=[
                 [InlineKeyboardButton(f"› CREDICUOTAS ({COST_CREDICUOTAS})", callback_data="ask_credicuotas")],
@@ -407,7 +438,7 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🇲🇽 MEXICO", callback_data="country_MX"),
              InlineKeyboardButton("🇪🇨 ECUADOR", callback_data="country_EC")],
             [InlineKeyboardButton("🇻🇪 VENEZUELA", callback_data="country_VE"),
-             InlineKeyboardButton("🇦🇷 ARGENTINA", callback_data="country_AR")],  # <-- NUEVO
+             InlineKeyboardButton("🇦🇷 ARGENTINA", callback_data="country_AR")],
             [InlineKeyboardButton("🌎 OTROS", callback_data="country_OT")],
         ]
         await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
@@ -416,57 +447,4 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"🇨🇴 SISBEN ({COST_SISBEN} coins)\nEnviame cedula", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
     elif data=="ask_runt":
         context.user_data['awaiting']='runt'
-        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
-    elif data=="ask_ruc":
-        context.user_data['awaiting']='ruc'
-        await q.edit_message_text(f"🇵🇪 RUC ({COST_RUC} coins)\nEnviame RUC\nEj: 20601030013", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
-    elif data=="ask_dnipe":
-        context.user_data['awaiting']='dnipe'
-        await q.edit_message_text(f"🇵🇪 DNI ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
-    elif data=="ask_credicuotas":  # <-- NUEVO
-        context.user_data['awaiting']='credicuotas'
-        await q.edit_message_text(f"🇦🇷 CREDICUOTAS ({COST_CREDICUOTAS} coins)\n━━━━━━━━━━━━━━━\nEnviame DNI, teléfono o ID\nEj: 12345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_AR")]]))
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    awaiting=context.user_data.get('awaiting')
-    text=update.message.text.strip()
-    if not awaiting: return
-    if awaiting=='sisben':
-        context.user_data['awaiting']=None
-        await do_sisben(update, update.effective_user.id, text)
-    elif awaiting=='runt':
-        context.user_data['awaiting']=None
-        await do_runt(update, update.effective_user.id, text.split()[0])
-    elif awaiting=='ruc':
-        context.user_data['awaiting']=None
-        await do_ruc(update, update.effective_user.id, text.split()[0])
-    elif awaiting=='dnipe':
-        context.user_data['awaiting']=None
-        await do_dnipe(update, update.effective_user.id, text.split()[0])
-    elif awaiting=='credicuotas':  # <-- NUEVO
-        context.user_data['awaiting']=None
-        await do_credicuotas(update, update.effective_user.id, text)
-
-def main():
-    threading.Thread(target=run_flask, daemon=True).start()
-    app=Application.builder().token(TOKEN).post_init(setup_commands).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("sys", sys_cmd))
-    app.add_handler(CommandHandler("mycoins", mycoins_cmd))
-    app.add_handler(CommandHandler("addcoins", addcoins_cmd))
-    app.add_handler(CommandHandler("addvip", addvip_cmd))
-    app.add_handler(CommandHandler("remvip", remvip_cmd))
-    app.add_handler(CommandHandler("users", users_cmd))
-    app.add_handler(CommandHandler("sisben", sisben_cmd))
-    app.add_handler(CommandHandler("runt", runt_cmd))
-    app.add_handler(CommandHandler("ruc", ruc_cmd))
-    app.add_handler(CommandHandler("dnipe", dnipe_cmd))
-    app.add_handler(CommandHandler("dniperu", dnipe_cmd))
-    app.add_handler(CommandHandler("credicuotas", credicuotas_cmd))  # <-- NUEVO
-    app.add_handler(CallbackQueryHandler(btn))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print(f"Bot iniciado OWNER {OWNER_ID} - CON CREDICUOTAS AGREGADO")  # <-- NUEVO mensaje
-    app.run_polling()
-
-if __name__=="__main__":
-    main()
+ 
