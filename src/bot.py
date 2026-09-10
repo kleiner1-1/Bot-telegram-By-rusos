@@ -162,50 +162,59 @@ async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_sisben(update, update.effective_user.id, context.args[0])
 
-# --- RUNT SOLO PLACA ---
-async def do_runt(target, user_id, placa):
+# --- RUNT CON TU API historialrunt.org ---
+async def do_runt(target, user_id, placa, documento=""):
     if not can_afford(user_id, COST_RUNT):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
         return
     placa = placa.upper().strip()
+    documento = documento.strip()
     await target.message.reply_text(f"[ RUNT ] Consultando {placa}... ⏳")
     try:
         s=requests.Session()
-        s.headers.update({"User-Agent":"Mozilla/5.0","Referer":"https://www.runt.com.co/"})
-        # intento API v2 solo placa
-        url=f"https://api.historialrunt.org/v2/consulta?placa={placa}"
-        r=s.get(url, timeout=20)
-        if r.status_code==200:
-            try:
-                data=r.json()
-                if data.get("success")==True or "marca" in r.text.lower():
-                    deduct(user_id, COST_RUNT)
-                    txt=f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\nPlaca: {data.get('placa',placa)}\nMarca: {data.get('marca','N/A')}\nLinea: {data.get('linea','N/A')}\nModelo: {data.get('modelo','N/A')}\nColor: {data.get('color','N/A')}\nEstado: {data.get('estado','N/A')}"
-                    await target.message.reply_text(txt)
-                    return
-            except:
-                pass
-        # fallback oficial
-        url2=f"https://www.runt.com.co/consultaCiudadana/consultaVehiculo.php?placa={placa}"
-        r2=s.get(url2, timeout=20, verify=False)
-        if len(r2.text)>200:
-            deduct(user_id, COST_RUNT)
-            clean=re.sub('<[^<]+?>', '\n', r2.text)
-            clean=unescape(clean)
-            clean="\n".join([l.strip() for l in clean.splitlines() if len(l.strip())>2])[:3500]
-            await target.message.reply_text(f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\n{clean}")
+        s.headers.update({"User-Agent":"Mozilla/5.0","Referer":"https://historialrunt.org/"})
+        if documento:
+            url=f"https://historialrunt.org/api/consultar.php?placa={placa}&documento={documento}"
+        else:
+            url=f"https://historialrunt.org/api/consultar.php?placa={placa}"
+        r=s.get(url, timeout=25, verify=False)
+        if r.status_code!=200:
+            await target.message.reply_text(f"[ RUNT ] {placa} API Error {r.status_code}")
             return
+        try:
+            data=r.json()
+        except:
+            data={"raw": r.text}
+        if not data:
+            await target.message.reply_text(f"[ RUNT ] {placa}\nNo encontrado")
+            return
+        deduct(user_id, COST_RUNT)
+        if isinstance(data, dict) and "raw" not in data:
+            txt=f"[ RUNT - {placa} ] ✅\n━━━━━━━━━━━━━━━\n"
+            # Mapeo inteligente
+            for k in ["placa","marca","linea","modelo","color","cilindraje","carroceria","servicio","estado","propietario","soat","tecnomecanica","vigencia_soat","vigencia_tecnomecanica","numero_motor","numero_chasis","combustible"]:
+                if k in data and data[k]:
+                    txt+=f"{k.upper()}: {data[k]}\n"
+            if len(txt) < 100:
+                txt+=f"\n{json.dumps(data, indent=2, ensure_ascii=False)[:3000]}"
+            await target.message.reply_text(txt[:4000])
+        else:
+            raw_text=data.get("raw", str(data)) if isinstance(data, dict) else str(data)
+            clean=re.sub('<[^<]+?>', ' ', raw_text)
+            clean=unescape(clean)
+            clean="\n".join([l.strip() for l in clean.splitlines() if l.strip()])[:3500]
+            await target.message.reply_text(f"[ RUNT - {placa} ] ✅\n━━━━━━━━━━━━━━━\n{clean}"[:4000])
     except Exception as e:
         await target.message.reply_text(f"Error RUNT: {e}")
-        return
-    await target.message.reply_text(f"[ RUNT ] {placa}\n━━━━━━━━━━━━━━━\nNo se encontró o RUNT caído")
 
 async def runt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args)<1:
         context.user_data['awaiting']='runt'
-        await update.message.reply_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo enviame la PLACA\nEj: OMG650")
+        await update.message.reply_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo enviame la PLACA\nEj: OMG650\nO con doc: OMG650 1002345678")
         return
-    await do_runt(update, update.effective_user.id, context.args[0])
+    placa=context.args[0]
+    documento=context.args[1] if len(context.args)>1 else ""
+    await do_runt(update, update.effective_user.id, placa, documento)
 
 async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
@@ -242,7 +251,7 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"🇨🇴 SISBEN ({COST_SISBEN} coins)\nEnviame cedula", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
     elif data=="ask_runt":
         context.user_data['awaiting']='runt'
-        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
+        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650\nO con doc: OMG650 1002345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting=context.user_data.get('awaiting')
@@ -253,7 +262,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await do_sisben(update, update.effective_user.id, text)
     elif awaiting=='runt':
         context.user_data['awaiting']=None
-        await do_runt(update, update.effective_user.id, text.split()[0])
+        partes=text.split()
+        placa_r=partes[0]
+        doc_r=partes[1] if len(partes)>1 else ""
+        await do_runt(update, update.effective_user.id, placa_r, doc_r)
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
@@ -269,7 +281,7 @@ def main():
     app.add_handler(CommandHandler("runt", runt_cmd))
     app.add_handler(CallbackQueryHandler(btn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print(f"Bot iniciado OWNER {OWNER_ID} - RUNT SOLO PLACA")
+    print(f"Bot iniciado OWNER {OWNER_ID} - RUNT API historialrunt.org")
     app.run_polling()
 
 if __name__=="__main__":
