@@ -1,1092 +1,379 @@
-import os
-import sqlite3
-import threading
-import time
-import requests
-import urllib3
-
+import os, threading, requests, urllib3, json, time, re
+from html import unescape
+from datetime import datetime
 from flask import Flask
 from dotenv import load_dotenv
-
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    BotCommand,
-    BotCommandScopeChat,
-)
-
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-
-# =========================================================
-# CONFIG
-# =========================================================
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
 
-TOKEN = os.getenv("BOT_TOKEN", "").strip()
-API_KEY_DECOLECTA = os.getenv("DECOLECTA_API_KEY", "").strip()
+OWNER_ID = 8768048667
+COST_SISBEN = 5
+COST_RUNT = 10
+COST_RUC = 10
+COST_DNIPE = 8
+DB_FILE = "users.json"
 
-OWNER_ID = int(os.getenv("OWNER_ID", "8768048667"))
-PORT = int(os.getenv("PORT", "10000"))
-DB_FILE = os.getenv("DB_FILE", "users.db")
+KEY PERU
 
-COST_RUC = int(os.getenv("COST_RUC", "10"))
-COST_TC = int(os.getenv("COST_TC", "2"))
-COST_TCHIST = int(os.getenv("COST_TCHIST", "3"))
+API_KEY_DECOLECTA = "sk_19272.V8Z6VdfAkdjg5teDriucciqmHRi9rbkK"
 
-DECOLECTA_BASE = "https://api.decolecta.com"
+COUNTRIES = {
+"CO": {"name": "🇨🇴 COLOMBIA"},
+"MX": {"name": "🇲🇽 MEXICO"},
+"EC": {"name": "🇪🇨 ECUADOR"},
+"VE": {"name": "🇻🇪 VENEZUELA"},
+"PE": {"name": "🇵🇪 PERU"},
+"OT": {"name": "🌎 OTROS"},
+}
 
+flask_app = Flask(name)
+@flask_app.route('/')
+def home(): return f"Bot vivo - Owner {OWNER_ID}"
+def run_flask(): flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 urllib3.disable_warnings()
 
-if not TOKEN:
-    raise RuntimeError(
-        "Falta BOT_TOKEN en las variables de entorno."
-    )
-
-if not API_KEY_DECOLECTA:
-    raise RuntimeError(
-        "Falta DECOLECTA_API_KEY en las variables de entorno."
-    )
-
-
-# =========================================================
-# FLASK
-# =========================================================
-
-flask_app = Flask(__name__)
-
-
-@flask_app.route("/")
-def home():
-    return "Bot Telegram activo"
-
-
-def run_flask():
-    flask_app.run(
-        host="0.0.0.0",
-        port=PORT
-    )
-
-
-# =========================================================
-# DATABASE
-# =========================================================
-
-def db_connect():
-    conn = sqlite3.connect(
-        DB_FILE,
-        timeout=20,
-        check_same_thread=False
-    )
-
-    conn.row_factory = sqlite3.Row
-
-    return conn
-
-
-def init_db():
-
-    conn = db_connect()
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
-            coins INTEGER DEFAULT 0,
-            vip_until REAL DEFAULT 0,
-            created_at REAL DEFAULT 0,
-            updated_at REAL DEFAULT 0
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS operations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            operation TEXT NOT NULL,
-            cost INTEGER DEFAULT 0,
-            success INTEGER DEFAULT 0,
-            created_at REAL DEFAULT 0
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-# =========================================================
-# USERS
-# =========================================================
-
-def ensure_user(
-    user_id,
-    username="",
-    first_name=""
-):
-
-    conn = db_connect()
-
-    now = time.time()
-
-    if user_id == OWNER_ID:
-        initial_coins = 999999
-        initial_vip = 9999999999
-    else:
-        initial_coins = 0
-        initial_vip = 0
-
-    conn.execute("""
-        INSERT INTO users (
-            user_id,
-            username,
-            first_name,
-            coins,
-            vip_until,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            username=excluded.username,
-            first_name=excluded.first_name,
-            updated_at=excluded.updated_at
-    """, (
-        user_id,
-        username or "",
-        first_name or "",
-        initial_coins,
-        initial_vip,
-        now,
-        now
-    ))
-
-    conn.commit()
-    conn.close()
-
-
+def load_db():
+if not os.path.exists(DB_FILE): return {}
+try:
+with open(DB_FILE, 'r') as f: return json.load(f)
+except: return {}
+def save_db(data):
+with open(DB_FILE, 'w') as f: json.dump(data, f, indent=2)
 def get_user(user_id):
-
-    ensure_user(user_id)
-
-    conn = db_connect()
-
-    row = conn.execute("""
-        SELECT *
-        FROM users
-        WHERE user_id=?
-    """, (user_id,)).fetchone()
-
-    conn.close()
-
-    if not row:
-        return None
-
-    return dict(row)
-
-
-def is_vip(user):
-
-    if not user:
-        return False
-
-    return (
-        float(user.get("vip_until", 0))
-        > time.time()
-    )
-
-
-def can_afford(user_id, cost):
-
-    if user_id == OWNER_ID:
-        return True
-
-    user = get_user(user_id)
-
-    if not user:
-        return False
-
-    if is_vip(user):
-        return True
-
-    return int(user["coins"]) >= cost
-
-
-def deduct(user_id, cost):
-
-    if user_id == OWNER_ID:
-        return True
-
-    conn = db_connect()
-
-    now = time.time()
-
-    row = conn.execute("""
-        SELECT coins, vip_until
-        FROM users
-        WHERE user_id=?
-    """, (user_id,)).fetchone()
-
-    if not row:
-        conn.close()
-        return False
-
-    if float(row["vip_until"]) > now:
-        conn.close()
-        return True
-
-    result = conn.execute("""
-        UPDATE users
-        SET
-            coins = coins - ?,
-            updated_at = ?
-        WHERE
-            user_id = ?
-            AND coins >= ?
-    """, (
-        cost,
-        now,
-        user_id,
-        cost
-    ))
-
-    conn.commit()
-
-    success = result.rowcount == 1
-
-    conn.close()
-
-    return success
-
-
-def add_coins(user_id, amount):
-
-    ensure_user(user_id)
-
-    conn = db_connect()
-
-    conn.execute("""
-        UPDATE users
-        SET
-            coins = coins + ?,
-            updated_at = ?
-        WHERE user_id = ?
-    """, (
-        amount,
-        time.time(),
-        user_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def add_vip(user_id, days):
-
-    ensure_user(user_id)
-
-    conn = db_connect()
-
-    now = time.time()
-
-    row = conn.execute("""
-        SELECT vip_until
-        FROM users
-        WHERE user_id=?
-    """, (user_id,)).fetchone()
-
-    current = float(
-        row["vip_until"]
-    ) if row else 0
-
-    base = max(
-        now,
-        current
-    )
-
-    new_vip = (
-        base +
-        (days * 86400)
-    )
-
-    conn.execute("""
-        UPDATE users
-        SET
-            vip_until = ?,
-            updated_at = ?
-        WHERE user_id = ?
-    """, (
-        new_vip,
-        now,
-        user_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def remove_vip(user_id):
-
-    ensure_user(user_id)
-
-    conn = db_connect()
-
-    conn.execute("""
-        UPDATE users
-        SET
-            vip_until = 0,
-            updated_at = ?
-        WHERE user_id = ?
-    """, (
-        time.time(),
-        user_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-# =========================================================
-# LOG
-# =========================================================
-
-def log_operation(
-    user_id,
-    operation,
-    cost,
-    success
-):
-
-    conn = db_connect()
-
-    conn.execute("""
-        INSERT INTO operations (
-            user_id,
-            operation,
-            cost,
-            success,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        operation,
-        cost,
-        1 if success else 0,
-        time.time()
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-# =========================================================
-# DECOLECTA
-# =========================================================
-
-def decolecta_get(
-    endpoint,
-    params=None
-):
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": (
-            f"Bearer {API_KEY_DECOLECTA}"
-        ),
-        "User-Agent": "TelegramBot/2.0"
-    }
-
-    try:
-
-        response = requests.get(
-            DECOLECTA_BASE + endpoint,
-            headers=headers,
-            params=params or {},
-            timeout=20
-        )
-
-    except requests.RequestException as e:
-
-        raise RuntimeError(
-            f"Error de conexión: {e}"
-        )
-
-    if response.status_code == 401:
-
-        raise RuntimeError(
-            "La API key de Decolecta no es válida."
-        )
-
-    if response.status_code == 429:
-
-        raise RuntimeError(
-            "Decolecta indicó límite de solicitudes."
-        )
-
-    if response.status_code >= 400:
-
-        try:
-            error = response.json()
-        except Exception:
-            error = response.text[:300]
-
-        raise RuntimeError(
-            f"API HTTP {response.status_code}: {error}"
-        )
-
-    try:
-
-        return response.json()
-
-    except Exception:
-
-        raise RuntimeError(
-            "Decolecta devolvió una respuesta inválida."
-        )
-
-
-# =========================================================
-# RUC
-# =========================================================
+db = load_db()
+uid = str(user_id)
+if uid not in db:
+db[uid] = {"coins": 9999 if int(uid)==OWNER_ID else 0, "vip_until": 9999999999 if int(uid)==OWNER_ID else 0}
+save_db(db)
+return db[uid]
+def is_vip(d): return d.get("vip_until",0) > time.time()
+def can_afford(uid, cost):
+if uid==OWNER_ID: return True
+d=get_user(uid)
+if is_vip(d): return True
+return d.get("coins",0)>=cost
+def deduct(uid, cost):
+if uid==OWNER_ID: return True
+db=load_db()
+suid=str(uid)
+if is_vip(db[suid]): return True
+if db[suid]["coins"]>=cost:
+db[suid]["coins"]-=cost
+save_db(db)
+return True
+return False
+
+================= API PERU =================
 
 def consulta_ruc_pe(ruc):
-
-    ruc = str(ruc).strip()
-
-    return decolecta_get(
-        "/v1/sunat/ruc/full",
-        {
-            "numero": ruc
-        }
-    )
-
-
-def format_ruc(data):
-
-    if not isinstance(data, dict):
-        return (
-            "🇵🇪 RUC PERÚ\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            "Respuesta inválida."
-        )
-
-    fields = [
-        ("RUC", ["ruc", "numero", "document_number"]),
-        ("Razón social", ["razon_social", "nombre_o_razon_social"]),
-        ("Estado", ["estado"]),
-        ("Condición", ["condicion"]),
-        ("Dirección", ["direccion"]),
-        ("Departamento", ["departamento"]),
-        ("Provincia", ["provincia"]),
-        ("Distrito", ["distrito"]),
-    ]
-
-    lines = [
-        "🇵🇪 RUC PERÚ",
-        "━━━━━━━━━━━━━━━━"
-    ]
-
-    for label, keys in fields:
-
-        value = None
-
-        for key in keys:
-
-            if key in data:
-                value = data.get(key)
-                break
-
-        if value not in (
-            None,
-            "",
-            "null"
-        ):
-
-            lines.append(
-                f"🔹 {label}: {value}"
-            )
-
-    if len(lines) == 2:
-
-        lines.append(
-            "No se encontraron datos."
-        )
-
-    lines.append(
-        "━━━━━━━━━━━━━━━━"
-    )
-
-    return "\n".join(lines)[:4000]
-
-
-# =========================================================
-# TIPO DE CAMBIO SUNAT
-# =========================================================
-
-def consulta_tc_sunat(
-    fecha=None,
-    mes=None,
-    anio=None
-):
-
-    params = {}
-
-    if fecha:
-        params["date"] = fecha
-
-    if mes is not None:
-        params["month"] = mes
-
-    if anio is not None:
-        params["year"] = anio
-
-    return decolecta_get(
-        "/v1/tipo-cambio/sunat",
-        params
-    )
-
-
-def format_tc(
-    data,
-    title="💱 TIPO DE CAMBIO SUNAT"
-):
-
-    if isinstance(data, list):
-
-        if not data:
-
-            return (
-                f"{title}\n\n"
-                "No se encontraron resultados."
-            )
-
-        output = [
-            title,
-            "━━━━━━━━━━━━━━━━"
-        ]
-
-        for item in data[:20]:
-
-            output.append(
-                f"📅 Fecha: "
-                f"{item.get('date', 'N/A')}\n"
-                f"💰 Compra: "
-                f"{item.get('buy_price', 'N/A')}\n"
-                f"💰 Venta: "
-                f"{item.get('sell_price', 'N/A')}\n"
-                "──────────────"
-            )
-
-        return "\n".join(output)[:4000]
-
-    if not isinstance(data, dict):
-
-        return (
-            f"{title}\n\n"
-            "Respuesta inválida."
-        )
-
-    return (
-        f"{title}\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"💵 Compra: "
-        f"{data.get('buy_price', 'N/A')}\n"
-        f"💵 Venta: "
-        f"{data.get('sell_price', 'N/A')}\n"
-        f"💱 Moneda: "
-        f"{data.get('base_currency', 'USD')}/"
-        f"{data.get('quote_currency', 'PEN')}\n"
-        f"📅 Fecha: "
-        f"{data.get('date', 'N/A')}\n"
-        "━━━━━━━━━━━━━━━━"
-    )
-
-
-# =========================================================
-# COMMANDS
-# =========================================================
-
-async def setup_commands(app):
-
-    user_commands = [
-
-        BotCommand(
-            "start",
-            "Acceso principal"
-        ),
-
-        BotCommand(
-            "sys",
-            "Panel principal"
-        ),
-
-        BotCommand(
-            "mycoins",
-            "Ver saldo"
-        ),
-
-        BotCommand(
-            "myinfo",
-            "Mi información"
-        ),
-
-        BotCommand(
-            "ruc",
-            "Consultar RUC Perú"
-        ),
-
-        BotCommand(
-            "tc",
-            "Tipo de cambio SUNAT"
-        ),
-
-        BotCommand(
-            "tcfecha",
-            "TC SUNAT por fecha"
-        ),
-
-        BotCommand(
-            "tcmes",
-            "TC SUNAT mensual"
-        ),
-    ]
-
-    await app.bot.set_my_commands(
-        user_commands
-    )
-
-    admin_commands = user_commands + [
-
-        BotCommand(
-            "addcoins",
-            "Dar coins"
-        ),
-
-        BotCommand(
-            "addvip",
-            "Dar VIP"
-        ),
-
-        BotCommand(
-            "remvip",
-            "Quitar VIP"
-        ),
-
-        BotCommand(
-            "users",
-            "Ver usuarios"
-        ),
-
-        BotCommand(
-            "stats",
-            "Estadísticas"
-        ),
-    ]
-
-    await app.bot.set_my_commands(
-        admin_commands,
-        scope=BotCommandScopeChat(
-            chat_id=OWNER_ID
-        )
-    )
-
-
-# =========================================================
-# START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    user = update.effective_user
-
-    ensure_user(
-        user.id,
-        user.username,
-        user.first_name
-    )
-
-    data = get_user(user.id)
-
-    if user.id == OWNER_ID:
-
-        plan = "OWNER ∞"
-        coins = "ILIMITADO"
-
-    else:
-
-        plan = (
-            "VIP"
-            if is_vip(data)
-            else "FREE"
-        )
-
-        coins = data["coins"]
-
-    keyboard = InlineKeyboardMarkup([
-
-        [
-            InlineKeyboardButton(
-                "🌎 Abrir panel",
-                callback_data="panel"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "💰 Mi saldo",
-                callback_data="mycoins"
-            ),
-
-            InlineKeyboardButton(
-                "👤 Mi info",
-                callback_data="myinfo"
-            )
-        ]
-
-    ])
-
-    await update.message.reply_text(
-
-        "╭━━━━━━━━━━━━━━━━╮\n"
-        "      🤖 TELEGRAM BOT\n"
-        "╰━━━━━━━━━━━━━━━━╯\n\n"
-
-        f"👤 ID: {user.id}\n"
-        f"⭐ PLAN: {plan}\n"
-        f"🪙 COINS: {coins}\n\n"
-
-        "Selecciona una opción:",
-
-        reply_markup=keyboard
-    )
-
-
-# =========================================================
-# MYCOINS
-# =========================================================
-
-async def mycoins_cmd(
-    update,
-    context
-):
-
-    user_id = update.effective_user.id
-
-    data = get_user(user_id)
-
-    if user_id == OWNER_ID:
-
-        await update.message.reply_text(
-            "╭━━━━━━━━━━━━━━╮\n"
-            "       👑 OWNER\n"
-            "╰━━━━━━━━━━━━━━╯\n\n"
-            "🪙 Coins: ILIMITADOS ∞"
-        )
-
-        return
-
-    await update.message.reply_text(
-
-        "╭━━━━━━━━━━━━━━╮\n"
-        "       💰 SALDO\n"
-        "╰━━━━━━━━━━━━━━╯\n\n"
-
-        f"⭐ Plan: "
-        f"{'VIP' if is_vip(data) else 'FREE'}\n"
-        f"🪙 Coins: {data['coins']}"
-    )
-
-
-# =========================================================
-# MYINFO
-# =========================================================
-
-async def myinfo_cmd(
-    update,
-    context
-):
-
-    user = update.effective_user
-
-    data = get_user(user.id)
-
-    if user.id == OWNER_ID:
-        plan = "OWNER ∞"
-    else:
-        plan = (
-            "VIP"
-            if is_vip(data)
-            else "FREE"
-        )
-
-    await update.message.reply_text(
-
-        "╭━━━━━━━━━━━━━━━━╮\n"
-        "       👤 MI INFO\n"
-        "╰━━━━━━━━━━━━━━━━╯\n\n"
-
-        f"🆔 ID: {user.id}\n"
-        f"👤 Nombre: "
-        f"{user.first_name or 'N/A'}\n"
-        f"🔹 Username: "
-        f"@{user.username if user.username else 'N/A'}\n"
-        f"⭐ Plan: {plan}\n"
-        f"🪙 Coins: {data['coins']}"
-    )
-
-
-# =========================================================
-# ADD COINS
-# =========================================================
-
-async def addcoins_cmd(
-    update,
-    context
-):
-
-    if update.effective_user.id != OWNER_ID:
-
-        await update.message.reply_text(
-            "❌ Solo el OWNER puede usar este comando."
-        )
-
-        return
-
-    if len(context.args) != 2:
-
-        await update.message.reply_text(
-            "Uso:\n"
-            "/addcoins ID CANTIDAD\n\n"
-            "Ejemplo:\n"
-            "/addcoins 123456789 50"
-        )
-
-        return
-
-    try:
-
-        user_id = int(
-            context.args[0]
-        )
-
-        amount = int(
-            context.args[1]
-        )
-
-        if amount <= 0:
-            raise ValueError
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ ID o cantidad inválida."
-        )
-
-        return
-
-    add_coins(
-        user_id,
-        amount
-    )
-
-    data = get_user(user_id)
-
-    await update.message.reply_text(
-
-        "✅ COINS ACTUALIZADOS\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-
-        f"🆔 ID: {user_id}\n"
-        f"➕ Añadidos: {amount}\n"
-        f"💰 Saldo: {data['coins']}"
-    )
-
-
-# =========================================================
-# ADD VIP
-# =========================================================
-
-async def addvip_cmd(
-    update,
-    context
-):
-
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    if len(context.args) != 2:
-
-        await update.message.reply_text(
-            "Uso:\n"
-            "/addvip ID DIAS"
-        )
-
-        return
-
-    try:
-
-        user_id = int(
-            context.args[0]
-        )
-
-        days = int(
-            context.args[1]
-        )
-
-        if days <= 0:
-            raise ValueError
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ Datos inválidos."
-        )
-
-        return
-
-    add_vip(
-        user_id,
-        days
-    )
-
-    await update.message.reply_text(
-
-        "✅ VIP ACTUALIZADO\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-
-        f"🆔 ID: {user_id}\n"
-        f"⭐ Días añadidos: {days}"
-    )
-
-
-# =========================================================
-# REMOVE VIP
-# =========================================================
-
-async def remvip_cmd(
-    update,
-    context
-):
-
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    if len(context.args) != 1:
-
-        await update.message.reply_text(
-            "Uso:\n"
-            "/remvip ID"
-        )
-
-        return
-
-    try:
-
-        user_id = int(
-            context.args[0]
-        )
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ ID inválido."
-        )
-
-        return
-
-    remove_vip(user_id)
-
-    await update.message.reply_text(
-
-        "✅ VIP ELIMINADO\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-
-        f"🆔 ID: {user_id}"
-    )
-
-
-# =========================================================
-# USERS
-# =========================================================
-
-async def users_cmd(
-    update,
-    context
-):
-
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    conn = db_connect()
-
-    total = conn.execute(
-        "SELECT COUNT(*) AS c FROM users"
-    ).fetchone()["c"]
-
-    rows = conn.execute("""
-        SELECT
-            user_id,
-            username,
-            coins,
-            vip_until
-        FROM users
-        ORDER BY updated_at DESC
-        LIMIT 20
-    """).fetchall()
-
-    conn.close()
-
-    text = (
-        f"👥 USUARIOS: {total}\n"
-        "━━━━━━━━━━━━━━━━\n"
-    )
-
-    for row in rows:
-
-        vip = (
-            "VIP"
-            if float(row["vip_until"]) > time.time()
-            else "FREE"
-        )
-
-        username = (
-            f"@{row['username']}"
-            if row["username"]
-            else "sin_username"
-        )
-
-        text += (
-            f"🆔 {row['user_id']}\n"
-            f"👤 {username}\n"
-            f"⭐ {vip} | "
-            f"🪙 {row['coins']}\n"
-            "──────────────\n"
-        )
-
-    await update.message.reply_text(
-        text[:4000]
-    )
-
-
-# =========================================================
-# STATS
-# =========================================================
-
-async def stats_cmd(
-    update,
-    context
-):
-
+url = "https://api.decolecta.com/v1/sunat/ruc/full"
+headers = {"Accept": "application/json", "Authorization": f"Bearer {API_KEY_DECOLECTA}"}
+try:
+r = requests.get(url, headers=headers, params={"numero": str(ruc).strip()}, timeout=25)
+return r.json()
+except Exception as e:
+return {"error": str(e)}
+
+def consulta_dni_pe(dni):
+url = "https://api.decolecta.com/v1/reniec/dni"
+headers = {"Accept": "application/json", "Authorization": f"Bearer {API_KEY_DECOLECTA}"}
+try:
+r = requests.get(url, headers=headers, params={"numero": str(dni).strip()}, timeout=25)
+return r.json()
+except Exception as e:
+return {"error": str(e)}
+
+================= SETUP COMMANDS =================
+
+async def setup_commands(app: Application):
+user_commands = [
+BotCommand("start", "Acceso principal"),
+BotCommand("sys", "Panel por paises"),
+BotCommand("mycoins", "Ver saldo"),
+BotCommand("sisben", "Consultar SISBEN"),
+BotCommand("runt", "Consultar RUNT (solo placa)"),
+BotCommand("ruc", "Consultar RUC PE 🇵🇪"),
+BotCommand("dnipe", "Consultar DNI PE 🇵🇪"),
+]
+await app.bot.set_my_commands(user_commands)
+admin_commands = user_commands + [
+BotCommand("addcoins", "Dar coins [OWNER]"),
+BotCommand("addvip", "Dar VIP [OWNER]"),
+BotCommand("remvip", "Quitar VIP [OWNER]"),
+BotCommand("users", "Ver usuarios [OWNER]"),
+]
+await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=OWNER_ID))
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+d=get_user(update.effective_user.id)
+plan = "OWNER ∞" if update.effective_user.id==OWNER_ID else ("VIP" if is_vip(d) else "FREE")
+await update.message.reply_text(f"[ ACCESS GRANTED ]\n━━━━━━━━━━━━━━━\nID : {update.effective_user.id}\nPLAN : {plan}\nCOINS : {d['coins']}\n━━━━━━━━━━━━━━━\n> /sys panel por paises")
+
+async def mycoins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+d=get_user(update.effective_user.id)
+if update.effective_user.id==OWNER_ID:
+await update.message.reply_text(f"[ OWNER {OWNER_ID} ]\nCoins: ILIMITADO ∞")
+else:
+await update.message.reply_text(f"[ SALDO ] Plan: {'VIP' if is_vip(d) else 'FREE'} | Coins: {d['coins']}")
+
+async def addcoins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if update.effective_user.id!=OWNER_ID:
+await update.message.reply_text("[ DENIED ] Solo OWNER")
+return
+if len(context.args)<2:
+await update.message.reply_text("Uso obligatorio con ID:\n/addcoins ID CANTIDAD\nEj: /addcoins 123456 50")
+return
+db=load_db()
+tid, amt = context.args[0], int(context.args[1])
+if tid not in db: db[tid]={"coins":0,"vip_until":0}
+db[tid]["coins"]+=amt
+save_db(db)
+await update.message.reply_text(f"[ OK ] ID {tid} +{amt} coins\nNuevo saldo: {db[tid]['coins']}")
+
+async def addvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if update.effective_user.id!=OWNER_ID: return
+if len(context.args)<2:
+await update.message.reply_text("Uso: /addvip ID DIAS")
+return
+db=load_db()
+tid, dias = context.args[0], int(context.args[1])
+if tid not in db: db[tid]={"coins":0,"vip_until":0}
+base=max(time.time(), db[tid].get("vip_until",0))
+db[tid]["vip_until"]=base+dias*86400
+save_db(db)
+await update.message.reply_text(f"[ VIP ] {tid} -> {dias} dias")
+async def remvip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if update.effective_user.id!=OWNER_ID: return
+db=load_db()
+tid=context.args[0]
+if tid in db:
+db[tid]["vip_until"]=0
+save_db(db)
+await update.message.reply_text(f"[ VIP REMOVIDO ] {tid}")
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if update.effective_user.id!=OWNER_ID: return
+db=load_db()
+txt=f"[ USERS {len(db)} ]\n"
+for uid,info in list(db.items())[-15:]:
+txt+=f"{uid} | {info['coins']} coins\n"
+await update.message.reply_text(txt)
+
+async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+d=get_user(update.effective_user.id)
+txt=f"[ PANEL POR PAISES ]\n━━━━━━━━━━━━━━━\nUSER: {update.effective_user.id} | Coins: {d['coins']}\n━━━━━━━━━━━━━━━\nSelecciona país"
+kb=[
+[InlineKeyboardButton("🇨🇴 COLOMBIA", callback_data="country_CO"),
+InlineKeyboardButton("🇵🇪 PERU", callback_data="country_PE")],
+[InlineKeyboardButton("🇲🇽 MEXICO", callback_data="country_MX"),
+InlineKeyboardButton("🇪🇨 ECUADOR", callback_data="country_EC")],
+[InlineKeyboardButton("🇻🇪 VENEZUELA", callback_data="country_VE"),
+InlineKeyboardButton("🌎 OTROS", callback_data="country_OT")],
+]
+await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+
+--- SISBEN (CON CEDULA) ---
+
+async def do_sisben(target, user_id, cedula):
+if not can_afford(user_id, COST_SISBEN):
+await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_SISBEN}")
+return
+try:
+s=requests.Session()
+s.headers.update({"User-Agent":"Mozilla/5.0","Referer":"https://ventanillasocial.dnp.gov.co/"})
+r=s.post("https://ventanillasocial.dnp.gov.co/Home/ObtenerDatosRUI", data={"pNumDoc":cedula,"pTipDoc":"3"}, verify=False, timeout=30)
+deduct(user_id, COST_SISBEN)
+await target.message.reply_text(f"[ SISBEN ] {cedula}\n━━━━━━━━━━━━━━━\n{r.text[:3000]}")
+except Exception as e:
+await target.message.reply_text(f"Error: {e}")
+async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if not context.args:
+context.user_data['awaiting']='sisben'
+await update.message.reply_text(f"SISBEN {COST_SISBEN} coins\nEnviame cedula")
+return
+await do_sisben(update, update.effective_user.id, context.args[0])
+
+--- RUNT SOLO PLACA (TU ORIGINAL) ---
+
+async def do_runt(target, user_id, placa):
+if not can_afford(user_id, COST_RUNT):
+await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
+return
+placa = placa.upper().strip()
+await target.message.reply_text(f"[ RUNT ] Consultando {placa}... ⏳")
+try:
+s=requests.Session()
+s.headers.update({"User-Agent":"Mozilla/5.0","Referer":"https://www.runt.com.co/"})
+url=f"https://api.historialrunt.org/v2/consulta?placa={placa}"
+r=s.get(url, timeout=20)
+if r.status_code==200:
+try:
+data=r.json()
+if data.get("success")==True or "marca" in r.text.lower():
+deduct(user_id, COST_RUNT)
+txt=f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\nPlaca: {data.get('placa',placa)}\nMarca: {data.get('marca','N/A')}\nLinea: {data.get('linea','N/A')}\nModelo: {data.get('modelo','N/A')}\nColor: {data.get('color','N/A')}\nEstado: {data.get('estado','N/A')}"
+await target.message.reply_text(txt)
+return
+except:
+pass
+url2=f"https://www.runt.com.co/consultaCiudadana/consultaVehiculo.php?placa={placa}"
+r2=s.get(url2, timeout=20, verify=False)
+if len(r2.text)>200:
+deduct(user_id, COST_RUNT)
+clean=re.sub('<[^<]+?>', '\n', r2.text)
+clean=unescape(clean)
+clean="\n".join([l.strip() for l in clean.splitlines() if len(l.strip())>2])[:3500]
+await target.message.reply_text(f"[ RUNT - {placa} ]\n━━━━━━━━━━━━━━━\n{clean}")
+return
+except Exception as e:
+await target.message.reply_text(f"Error RUNT: {e}")
+return
+await target.message.reply_text(f"[ RUNT ] {placa}\n━━━━━━━━━━━━━━━\nNo se encontró o RUNT caído")
+
+async def runt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if len(context.args)<1:
+context.user_data['awaiting']='runt'
+await update.message.reply_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo enviame la PLACA\nEj: OMG650")
+return
+await do_runt(update, update.effective_user.id, context.args[0])
+
+--- RUC PE ---
+
+async def do_ruc(target, user_id, ruc):
+if not can_afford(user_id, COST_RUC):
+await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUC} coins")
+return
+await target.message.reply_text(f"[ RUC PE ] Consultando {ruc}... ⏳")
+data = consulta_ruc_pe(ruc)
+if data.get("error"):
+await target.message.reply_text(f"[ RUC - {ruc} ] ❌ {data.get('error')}")
+return
+if not data.get("razon_social") and not data.get("numero"):
+await target.message.reply_text(f"[ RUC - {ruc} ] ❌ No encontrado\n{json.dumps(data)[:800]}")
+return
+deduct(user_id, COST_RUC)
+txt = f"[ RUC - {ruc} ] ✅\n━━━━━━━━━━━━━━━\n🏢 {data.get('razon_social','N/A')}\n📊 ESTADO: {data.get('estado','N/A')}\n📋 CONDICION: {data.get('condicion','N/A')}\n📍 {data.get('direccion','N/A')}\n━━━━━━━━━━━━━━━"
+await target.message.reply_text(txt[:4000])
+
+async def ruc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if not context.args:
+context.user_data['awaiting']='ruc'
+await update.message.reply_text(f"🇵🇪 RUC ({COST_RUC} coins)\nEnviame RUC\nEj: 20601030013")
+return
+await do_ruc(update, update.effective_user.id, context.args[0])
+
+--- DNI PE ---
+
+async def do_dnipe(target, user_id, dni):
+if not can_afford(user_id, COST_DNIPE):
+await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_DNIPE} coins")
+return
+await target.message.reply_text(f"[ DNI PE ] Consultando {dni}... ⏳")
+data = consulta_dni_pe(dni)
+if data.get("error") or (not data.get("nombres") and not data.get("nombre_completo")):
+await target.message.reply_text(f"[ DNI PE - {dni} ] ❌ {data.get('error') or 'No encontrado'}\n{str(data)[:800]}")
+return
+deduct(user_id, COST_DNIPE)
+completo = data.get("nombre_completo") or f"{data.get('nombres','')} {data.get('apellido_paterno','')} {data.get('apellido_materno','')}"
+txt = f"[ DNI PE - {dni} ] ✅\n━━━━━━━━━━━━━━━\n👤 {completo}\n🪪 DNI: {dni}\n━━━━━━━━━━━━━━━"
+await target.message.reply_text(txt[:4000])
+
+async def dnipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if not context.args:
+context.user_data['awaiting']='dnipe'
+await update.message.reply_text(f"🇵🇪 DNI PE ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678")
+return
+await do_dnipe(update, update.effective_user.id, context.args[0])
+
+async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+q=update.callback_query
+await q.answer()
+data=q.data
+uid=q.from_user.id
+if data.startswith("country_"):
+code=data.split("_")[1]
+d=get_user(uid)
+if code=="CO":
+txt=f"[ 🇨🇴 COLOMBIA ]\n━━━━━━━━━━━━━━━\nCoins: {d['coins']}\n━━━━━━━━━━━━━━━\n2 módulos"
+kb=[
+[InlineKeyboardButton(f"› SISBEN / RUI ({COST_SISBEN})", callback_data="ask_sisben")],
+[InlineKeyboardButton(f"› RUNT - SOLO PLACA ({COST_RUNT})", callback_data="ask_runt")],
+[InlineKeyboardButton("‹ Volver", callback_data="back_countries")],
+]
+elif code=="PE":
+txt=f"[ 🇵🇪 PERU ]\n━━━━━━━━━━━━━━━\nCoins: {d['coins']}\n━━━━━━━━━━━━━━━\n2 módulos"
+kb=[
+[InlineKeyboardButton(f"› RUC SUNAT ({COST_RUC})", callback_data="ask_ruc")],
+[InlineKeyboardButton(f"› DNI RENIEC ({COST_DNIPE})", callback_data="ask_dnipe")],
+[InlineKeyboardButton("‹ Volver", callback_data="back_countries")],
+]
+else:
+txt=f"[ {COUNTRIES[code]['name']} ]\n━━━━━━━━━━━━━━━\n🚧 En construcción"
+kb=[[InlineKeyboardButton("‹ Volver", callback_data="back_countries")]]
+await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+elif data=="back_countries":
+d=get_user(uid)
+txt=f"[ PANEL POR PAISES ]\n━━━━━━━━━━━━━━━\nUSER: {uid} | Coins: {d['coins']}\n━━━━━━━━━━━━━━━\nSelecciona país"
+kb=[
+[InlineKeyboardButton("🇨🇴 COLOMBIA", callback_data="country_CO"),
+InlineKeyboardButton("🇵🇪 PERU", callback_data="country_PE")],
+[InlineKeyboardButton("🇲🇽 MEXICO", callback_data="country_MX"),
+InlineKeyboardButton("🇪🇨 ECUADOR", callback_data="country_EC")],
+[InlineKeyboardButton("🇻🇪 VENEZUELA", callback_data="country_VE"),
+InlineKeyboardButton("🌎 OTROS", callback_data="country_OT")],
+]
+await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+elif data=="ask_sisben":
+context.user_data['awaiting']='sisben'
+await q.edit_message_text(f"🇨🇴 SISBEN ({COST_SISBEN} coins)\nEnviame cedula", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
+elif data=="ask_runt":
+context.user_data['awaiting']='runt'
+await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
+elif data=="ask_ruc":
+context.user_data['awaiting']='ruc'
+await q.edit_message_text(f"🇵🇪 RUC ({COST_RUC} coins)\nEnviame RUC\nEj: 20601030013", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
+elif data=="ask_dnipe":
+context.user_data['awaiting']='dnipe'
+await q.edit_message_text(f"🇵🇪 DNI ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+awaiting=context.user_data.get('awaiting')
+text=update.message.text.strip()
+if not awaiting: return
+if awaiting=='sisben':
+context.user_data['awaiting']=None
+await do_sisben(update, update.effective_user.id, text)
+elif awaiting=='runt':
+context.user_data['awaiting']=None
+await do_runt(update, update.effective_user.id, text.split()[0])
+elif awaiting=='ruc':
+context.user_data['awaiting']=None
+await do_ruc(update, update.effective_user.id, text.split()[0])
+elif awaiting=='dnipe':
+context.user_data['awaiting']=None
+await do_dnipe(update, update.effective_user.id, text.split()[0])
+
+def main():
+threading.Thread(target=run_flask, daemon=True).start()
+app=Application.builder().token(TOKEN).post_init(setup_commands).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("sys", sys_cmd))
+app.add_handler(CommandHandler("mycoins", mycoins_cmd))
+app.add_handler(CommandHandler("addcoins", addcoins_cmd))
+app.add_handler(CommandHandler("addvip", addvip_cmd))
+app.add_handler(CommandHandler("remvip", remvip_cmd))
+app.add_handler(CommandHandler("users", users_cmd))
+app.add_handler(CommandHandler("sisben", sisben_cmd))
+app.add_handler(CommandHandler("runt", runt_cmd))
+app.add_handler(CommandHandler("ruc", ruc_cmd))
+app.add_handler(CommandHandler("dnipe", dnipe_cmd))
+app.add_handler(CommandHandler("dniperu", dnipe_cmd))
+app.add_handler(CallbackQueryHandler(btn))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+print(f"Bot iniciado OWNER {OWNER_ID} - CON PERU AGREGADO")
+app.run_polling()
+
+if name=="main":
+main()
