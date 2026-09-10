@@ -86,46 +86,17 @@ def consulta_dni_pe(dni):
     except Exception as e:
         return {"error": str(e)}
 
-# ================= API CREDICUOTAS (ARGENTINA) =================
-def consulta_credicuotas(documento=None, telefono=None, customer_id=None):
+# ================= API CREDICUOTAS =================
+def consulta_credicuotas(documento):
     url = "https://clientes.credicuotas.com.ar/v1/onboarding/resolvecustomers/"
-    
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin": "https://clientes.credicuotas.com.ar",
-        "Referer": "https://clientes.credicuotas.com.ar/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-    
-    payload = {}
-    if documento:
-        payload["document"] = str(documento).strip()
-    if telefono:
-        payload["phone"] = str(telefono).strip()
-    if customer_id:
-        payload["customerId"] = str(customer_id).strip()
-    
-    if not payload:
-        return {"error": "Debes proporcionar al menos un parámetro (documento, teléfono o customerId)"}
-    
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        
-        if response.status_code == 200:
-            return {
-                "success": True,
-                "status_code": response.status_code,
-                "data": response.json()
-            }
-        else:
-            return {
-                "success": False,
-                "status_code": response.status_code,
-                "error": "Error en la consulta",
-                "data": response.text
-            }
-            
+        r = requests.post(url, headers=headers, json={"document": str(documento).strip()}, timeout=15)
+        return r.json()
     except Exception as e:
         return {"error": str(e)}
 
@@ -220,7 +191,7 @@ async def sys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
-# --- SISBEN (CON CEDULA) ---
+# --- SISBEN ---
 async def do_sisben(target, user_id, cedula):
     if not can_afford(user_id, COST_SISBEN):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_SISBEN}")
@@ -241,7 +212,7 @@ async def sisben_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_sisben(update, update.effective_user.id, context.args[0])
 
-# --- RUNT SOLO PLACA ---
+# --- RUNT ---
 async def do_runt(target, user_id, placa):
     if not can_afford(user_id, COST_RUNT):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_RUNT} coins")
@@ -330,7 +301,7 @@ async def dnipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await do_dnipe(update, update.effective_user.id, context.args[0])
 
-# --- CREDICUOTAS AR (CORREGIDO) ---
+# --- CREDICUOTAS AR ---
 async def do_credicuotas(target, user_id, documento):
     if not can_afford(user_id, COST_CREDICUOTAS):
         await target.message.reply_text(f"[ SIN COINS ] Necesitas {COST_CREDICUOTAS} coins")
@@ -338,64 +309,62 @@ async def do_credicuotas(target, user_id, documento):
     
     await target.message.reply_text(f"[ CREDICUOTAS ] Consultando {documento}... ⏳")
     
-    result = consulta_credicuotas(documento=documento)
-    
-    if result.get("error"):
-        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\n{result.get('error')}")
-        return
-    
-    if not result.get("success") or result.get("status_code") != 200:
-        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nStatus: {result.get('status_code')}\nNo encontrado")
-        return
-    
-    data = result.get("data", [])
-    
-    # Si devuelve lista vacía
-    if not data or len(data) == 0:
-        await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nNo se encontraron datos")
-        return
-    
-    deduct(user_id, COST_CREDICUOTAS)
-    
-    # Formatear cada resultado (puede devolver múltiples)
-    for item in data:
-        cuit = item.get("cuit", "N/A")
-        nombre = item.get("nombrecompleto", "N/A")
-        dni = item.get("dni", "N/A")
-        fecha_nac = item.get("fechanacimiento", "N/A")
-        sexo = item.get("sexo", "N/A")
+    try:
+        data = consulta_credicuotas(documento)
         
-        # Calcular edad si hay fecha
-        edad = "N/A"
-        if fecha_nac and fecha_nac != "N/A":
-            try:
-                fecha = datetime.strptime(fecha_nac, "%Y-%m-%d")
-                hoy = datetime.now()
-                edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
-            except:
-                pass
+        if data.get("error"):
+            await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\n{data.get('error')}")
+            return
         
-        sexo_icon = "👩" if sexo == "F" else "👨" if sexo == "M" else "👤"
+        # Si no es lista o está vacía
+        if not isinstance(data, list) or len(data) == 0:
+            await target.message.reply_text(f"[ CREDICUOTAS - {documento} ] ❌\nNo se encontraron datos")
+            return
         
-        txt = f"[ 🇦🇷 CREDICUOTAS - {dni} ] ✅\n"
-        txt += f"━━━━━━━━━━━━━━━\n"
-        txt += f"{sexo_icon} Nombre: {nombre}\n"
-        txt += f"🪪 DNI: {dni}\n"
-        txt += f"🏢 CUIT: {cuit}\n"
-        txt += f"📅 Nacimiento: {fecha_nac}"
-        if edad != "N/A":
-            txt += f" ({edad} años)"
-        txt += f"\n⚧ Sexo: {'Femenino' if sexo == 'F' else 'Masculino' if sexo == 'M' else sexo}\n"
-        txt += f"━━━━━━━━━━━━━━━"
+        deduct(user_id, COST_CREDICUOTAS)
         
-        await target.message.reply_text(txt[:4000])
+        # Procesar cada resultado
+        for item in data:
+            cuit = item.get("cuit", "N/A")
+            nombre = item.get("nombrecompleto", "N/A")
+            dni = item.get("dni", "N/A")
+            fecha_nac = item.get("fechanacimiento", "N/A")
+            sexo = item.get("sexo", "N/A")
+            
+            # Calcular edad
+            edad = ""
+            if fecha_nac and fecha_nac != "N/A":
+                try:
+                    fecha = datetime.strptime(fecha_nac, "%Y-%m-%d")
+                    hoy = datetime.now()
+                    edad_calc = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
+                    edad = f" ({edad_calc} años)"
+                except:
+                    pass
+            
+            sexo_icon = "👩" if sexo == "F" else "👨" if sexo == "M" else "👤"
+            sexo_txt = "Femenino" if sexo == "F" else "Masculino" if sexo == "M" else sexo
+            
+            txt = f"[ 🇦🇷 CREDICUOTAS - {dni} ] ✅\n"
+            txt += f"━━━━━━━━━━━━━━━\n"
+            txt += f"{sexo_icon} Nombre: {nombre}\n"
+            txt += f"🪪 DNI: {dni}\n"
+            txt += f"🏢 CUIT: {cuit}\n"
+            txt += f"📅 Nacimiento: {fecha_nac}{edad}\n"
+            txt += f"⚧ Sexo: {sexo_txt}\n"
+            txt += f"━━━━━━━━━━━━━━━"
+            
+            await target.message.reply_text(txt[:4000])
+            
+    except Exception as e:
+        await target.message.reply_text(f"[ CREDICUOTAS ] Error: {str(e)}")
 
 async def credicuotas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         context.user_data['awaiting']='credicuotas'
-        await update.message.reply_text(f"🇦🇷 CREDICUOTAS ({COST_CREDICUOTAS} coins)\n━━━━━━━━━━━━━━━\nEnviame DNI, teléfono o ID de cliente\nEj: 12345678")
+        await update.message.reply_text(f"🇦🇷 CREDICUOTAS ({COST_CREDICUOTAS} coins)\n━━━━━━━━━━━━━━━\nEnviame DNI\nEj: 50563362")
         return
-    await do_credicuotas(update, update.effective_user.id, " ".join(context.args))
+    await do_credicuotas(update, update.effective_user.id, context.args[0])
 
 async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
@@ -447,4 +416,13 @@ async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"🇨🇴 SISBEN ({COST_SISBEN} coins)\nEnviame cedula", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
     elif data=="ask_runt":
         context.user_data['awaiting']='runt'
- 
+        await q.edit_message_text(f"🇨🇴 RUNT ({COST_RUNT} coins)\n━━━━━━━━━━━━━━━\nSolo PLACA\nEj: OMG650", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_CO")]]))
+    elif data=="ask_ruc":
+        context.user_data['awaiting']='ruc'
+        await q.edit_message_text(f"🇵🇪 RUC ({COST_RUC} coins)\nEnviame RUC\nEj: 20601030013", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
+    elif data=="ask_dnipe":
+        context.user_data['awaiting']='dnipe'
+        await q.edit_message_text(f"🇵🇪 DNI ({COST_DNIPE} coins)\nEnviame DNI\nEj: 12345678", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("‹ Volver", callback_data="country_PE")]]))
+    elif data=="ask_credicuotas":
+        context.user_data['awaiting']='credicuotas'
+        await q.edit_message_text(f"🇦🇷 CREDICUOTAS ({COST_CREDICUOTAS} coins)\n━━━━━━━━━━━━━━━\nEnviame DNI\nEj: 50563362", reply_markup=InlineKe
