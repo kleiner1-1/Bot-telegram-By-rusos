@@ -1,13 +1,10 @@
 import os
 import sqlite3
 import threading
-import asyncio
+import time
 import requests
 import urllib3
-import time
-import re
 
-from datetime import datetime
 from flask import Flask
 from dotenv import load_dotenv
 
@@ -24,8 +21,6 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
 )
 
 # =========================================================
@@ -38,35 +33,27 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 API_KEY_DECOLECTA = os.getenv("DECOLECTA_API_KEY", "").strip()
 
 OWNER_ID = int(os.getenv("OWNER_ID", "8768048667"))
-
 PORT = int(os.getenv("PORT", "10000"))
 DB_FILE = os.getenv("DB_FILE", "users.db")
 
 COST_RUC = int(os.getenv("COST_RUC", "10"))
 COST_TC = int(os.getenv("COST_TC", "2"))
 COST_TCHIST = int(os.getenv("COST_TCHIST", "3"))
-COST_SBS = int(os.getenv("COST_SBS", "3"))
 
-if not TOKEN:
-    raise RuntimeError("Falta BOT_TOKEN en las variables de entorno.")
-
-if not API_KEY_DECOLECTA:
-    raise RuntimeError("Falta DECOLECTA_API_KEY en las variables de entorno.")
+DECOLECTA_BASE = "https://api.decolecta.com"
 
 urllib3.disable_warnings()
 
-# =========================================================
-# PAISES
-# =========================================================
+if not TOKEN:
+    raise RuntimeError(
+        "Falta BOT_TOKEN en las variables de entorno."
+    )
 
-COUNTRIES = {
-    "CO": {"name": "🇨🇴 COLOMBIA"},
-    "MX": {"name": "🇲🇽 MEXICO"},
-    "EC": {"name": "🇪🇨 ECUADOR"},
-    "VE": {"name": "🇻🇪 VENEZUELA"},
-    "PE": {"name": "🇵🇪 PERU"},
-    "OT": {"name": "🌎 OTROS"},
-}
+if not API_KEY_DECOLECTA:
+    raise RuntimeError(
+        "Falta DECOLECTA_API_KEY en las variables de entorno."
+    )
+
 
 # =========================================================
 # FLASK
@@ -77,7 +64,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return f"Bot vivo - Owner {OWNER_ID}"
+    return "Bot Telegram activo"
 
 
 def run_flask():
@@ -88,20 +75,23 @@ def run_flask():
 
 
 # =========================================================
-# DATABASE SQLITE
+# DATABASE
 # =========================================================
 
 def db_connect():
     conn = sqlite3.connect(
         DB_FILE,
-        timeout=10,
+        timeout=20,
         check_same_thread=False
     )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
 def init_db():
+
     conn = db_connect()
 
     conn.execute("""
@@ -130,88 +120,27 @@ def init_db():
     conn.commit()
     conn.close()
 
-    migrate_old_json()
 
+# =========================================================
+# USERS
+# =========================================================
 
-def migrate_old_json():
-    """
-    Migra users.json si todavía existe.
-    No elimina el archivo original.
-    """
-
-    import json
-
-    old_file = "users.json"
-
-    if not os.path.exists(old_file):
-        return
-
-    try:
-        with open(old_file, "r", encoding="utf-8") as f:
-            old_data = json.load(f)
-    except Exception:
-        return
-
-    if not isinstance(old_data, dict):
-        return
-
-    conn = db_connect()
-
-    for uid, info in old_data.items():
-
-        try:
-            user_id = int(uid)
-        except Exception:
-            continue
-
-        coins = int(info.get("coins", 0))
-        vip_until = float(info.get("vip_until", 0))
-
-        now = time.time()
-
-        conn.execute("""
-            INSERT INTO users (
-                user_id,
-                coins,
-                vip_until,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?)
-
-            ON CONFLICT(user_id)
-            DO UPDATE SET
-                coins=excluded.coins,
-                vip_until=excluded.vip_until,
-                updated_at=excluded.updated_at
-        """, (
-            user_id,
-            coins,
-            vip_until,
-            now,
-            now
-        ))
-
-    conn.commit()
-    conn.close()
-
-    try:
-        os.rename(
-            old_file,
-            "users.json.migrated"
-        )
-    except Exception:
-        pass
-
-
-def ensure_user(user_id, username="", first_name=""):
+def ensure_user(
+    user_id,
+    username="",
+    first_name=""
+):
 
     conn = db_connect()
 
     now = time.time()
 
-    initial_coins = 9999 if user_id == OWNER_ID else 0
-    initial_vip = 9999999999 if user_id == OWNER_ID else 0
+    if user_id == OWNER_ID:
+        initial_coins = 999999
+        initial_vip = 9999999999
+    else:
+        initial_coins = 0
+        initial_vip = 0
 
     conn.execute("""
         INSERT INTO users (
@@ -258,14 +187,21 @@ def get_user(user_id):
 
     conn.close()
 
+    if not row:
+        return None
+
     return dict(row)
 
 
 def is_vip(user):
 
-    return float(
-        user.get("vip_until", 0)
-    ) > time.time()
+    if not user:
+        return False
+
+    return (
+        float(user.get("vip_until", 0))
+        > time.time()
+    )
 
 
 def can_afford(user_id, cost):
@@ -274,6 +210,9 @@ def can_afford(user_id, cost):
         return True
 
     user = get_user(user_id)
+
+    if not user:
+        return False
 
     if is_vip(user):
         return True
@@ -306,10 +245,12 @@ def deduct(user_id, cost):
 
     result = conn.execute("""
         UPDATE users
-        SET coins = coins - ?,
-            updated_at=?
-        WHERE user_id=?
-        AND coins >= ?
+        SET
+            coins = coins - ?,
+            updated_at = ?
+        WHERE
+            user_id = ?
+            AND coins >= ?
     """, (
         cost,
         now,
@@ -334,9 +275,10 @@ def add_coins(user_id, amount):
 
     conn.execute("""
         UPDATE users
-        SET coins = coins + ?,
-            updated_at=?
-        WHERE user_id=?
+        SET
+            coins = coins + ?,
+            updated_at = ?
+        WHERE user_id = ?
     """, (
         amount,
         time.time(),
@@ -361,22 +303,26 @@ def add_vip(user_id, days):
         WHERE user_id=?
     """, (user_id,)).fetchone()
 
-    current = float(row["vip_until"])
+    current = float(
+        row["vip_until"]
+    ) if row else 0
 
     base = max(
         now,
         current
     )
 
-    new_vip = base + (
-        days * 86400
+    new_vip = (
+        base +
+        (days * 86400)
     )
 
     conn.execute("""
         UPDATE users
-        SET vip_until=?,
-            updated_at=?
-        WHERE user_id=?
+        SET
+            vip_until = ?,
+            updated_at = ?
+        WHERE user_id = ?
     """, (
         new_vip,
         now,
@@ -395,9 +341,10 @@ def remove_vip(user_id):
 
     conn.execute("""
         UPDATE users
-        SET vip_until=0,
-            updated_at=?
-        WHERE user_id=?
+        SET
+            vip_until = 0,
+            updated_at = ?
+        WHERE user_id = ?
     """, (
         time.time(),
         user_id
@@ -406,6 +353,10 @@ def remove_vip(user_id):
     conn.commit()
     conn.close()
 
+
+# =========================================================
+# LOG
+# =========================================================
 
 def log_operation(
     user_id,
@@ -441,16 +392,18 @@ def log_operation(
 # DECOLECTA
 # =========================================================
 
-DECOLECTA_BASE = "https://api.decolecta.com"
-
-
-def decolecta_get(endpoint, params=None):
+def decolecta_get(
+    endpoint,
+    params=None
+):
 
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_KEY_DECOLECTA}",
-        "User-Agent": "BotTelegramByRusos/2.0"
+        "Authorization": (
+            f"Bearer {API_KEY_DECOLECTA}"
+        ),
+        "User-Agent": "TelegramBot/2.0"
     }
 
     try:
@@ -469,11 +422,13 @@ def decolecta_get(endpoint, params=None):
         )
 
     if response.status_code == 401:
+
         raise RuntimeError(
             "La API key de Decolecta no es válida."
         )
 
     if response.status_code == 429:
+
         raise RuntimeError(
             "Decolecta indicó límite de solicitudes."
         )
@@ -490,6 +445,7 @@ def decolecta_get(endpoint, params=None):
         )
 
     try:
+
         return response.json()
 
     except Exception:
@@ -500,7 +456,7 @@ def decolecta_get(endpoint, params=None):
 
 
 # =========================================================
-# RUC PERU
+# RUC
 # =========================================================
 
 def consulta_ruc_pe(ruc):
@@ -513,6 +469,64 @@ def consulta_ruc_pe(ruc):
             "numero": ruc
         }
     )
+
+
+def format_ruc(data):
+
+    if not isinstance(data, dict):
+        return (
+            "🇵🇪 RUC PERÚ\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Respuesta inválida."
+        )
+
+    fields = [
+        ("RUC", ["ruc", "numero", "document_number"]),
+        ("Razón social", ["razon_social", "nombre_o_razon_social"]),
+        ("Estado", ["estado"]),
+        ("Condición", ["condicion"]),
+        ("Dirección", ["direccion"]),
+        ("Departamento", ["departamento"]),
+        ("Provincia", ["provincia"]),
+        ("Distrito", ["distrito"]),
+    ]
+
+    lines = [
+        "🇵🇪 RUC PERÚ",
+        "━━━━━━━━━━━━━━━━"
+    ]
+
+    for label, keys in fields:
+
+        value = None
+
+        for key in keys:
+
+            if key in data:
+                value = data.get(key)
+                break
+
+        if value not in (
+            None,
+            "",
+            "null"
+        ):
+
+            lines.append(
+                f"🔹 {label}: {value}"
+            )
+
+    if len(lines) == 2:
+
+        lines.append(
+            "No se encontraron datos."
+        )
+
+    lines.append(
+        "━━━━━━━━━━━━━━━━"
+    )
+
+    return "\n".join(lines)[:4000]
 
 
 # =========================================================
@@ -528,15 +542,12 @@ def consulta_tc_sunat(
     params = {}
 
     if fecha:
-
         params["date"] = fecha
 
     if mes is not None:
-
         params["month"] = mes
 
     if anio is not None:
-
         params["year"] = anio
 
     return decolecta_get(
@@ -545,11 +556,15 @@ def consulta_tc_sunat(
     )
 
 
-def format_tc(data, title):
+def format_tc(
+    data,
+    title="💱 TIPO DE CAMBIO SUNAT"
+):
 
     if isinstance(data, list):
 
         if not data:
+
             return (
                 f"{title}\n\n"
                 "No se encontraron resultados."
@@ -563,28 +578,42 @@ def format_tc(data, title):
         for item in data[:20]:
 
             output.append(
-                f"📅 {item.get('date', 'N/A')}\n"
-                f"💰 Compra: {item.get('buy_price', 'N/A')}\n"
-                f"💰 Venta: {item.get('sell_price', 'N/A')}\n"
+                f"📅 Fecha: "
+                f"{item.get('date', 'N/A')}\n"
+                f"💰 Compra: "
+                f"{item.get('buy_price', 'N/A')}\n"
+                f"💰 Venta: "
+                f"{item.get('sell_price', 'N/A')}\n"
+                "──────────────"
             )
 
         return "\n".join(output)[:4000]
 
+    if not isinstance(data, dict):
+
+        return (
+            f"{title}\n\n"
+            "Respuesta inválida."
+        )
+
     return (
         f"{title}\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"💵 Compra: {data.get('buy_price', 'N/A')}\n"
-        f"💵 Venta: {data.get('sell_price', 'N/A')}\n"
+        f"💵 Compra: "
+        f"{data.get('buy_price', 'N/A')}\n"
+        f"💵 Venta: "
+        f"{data.get('sell_price', 'N/A')}\n"
         f"💱 Moneda: "
         f"{data.get('base_currency', 'USD')}/"
         f"{data.get('quote_currency', 'PEN')}\n"
-        f"📅 Fecha: {data.get('date', 'N/A')}\n"
+        f"📅 Fecha: "
+        f"{data.get('date', 'N/A')}\n"
         "━━━━━━━━━━━━━━━━"
     )
 
 
 # =========================================================
-# COMANDOS
+# COMMANDS
 # =========================================================
 
 async def setup_commands(app):
@@ -598,7 +627,7 @@ async def setup_commands(app):
 
         BotCommand(
             "sys",
-            "Panel por paises"
+            "Panel principal"
         ),
 
         BotCommand(
@@ -613,7 +642,7 @@ async def setup_commands(app):
 
         BotCommand(
             "ruc",
-            "RUC Peru"
+            "Consultar RUC Perú"
         ),
 
         BotCommand(
@@ -630,7 +659,6 @@ async def setup_commands(app):
             "tcmes",
             "TC SUNAT mensual"
         ),
-
     ]
 
     await app.bot.set_my_commands(
@@ -641,29 +669,28 @@ async def setup_commands(app):
 
         BotCommand(
             "addcoins",
-            "Dar coins [OWNER]"
+            "Dar coins"
         ),
 
         BotCommand(
             "addvip",
-            "Dar VIP [OWNER]"
+            "Dar VIP"
         ),
 
         BotCommand(
             "remvip",
-            "Quitar VIP [OWNER]"
+            "Quitar VIP"
         ),
 
         BotCommand(
             "users",
-            "Ver usuarios [OWNER]"
+            "Ver usuarios"
         ),
 
         BotCommand(
             "stats",
-            "Estadisticas [OWNER]"
-        )
-
+            "Estadísticas"
+        ),
     ]
 
     await app.bot.set_my_commands(
@@ -678,7 +705,10 @@ async def setup_commands(app):
 # START
 # =========================================================
 
-async def start(update, context):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     user = update.effective_user
 
@@ -688,32 +718,59 @@ async def start(update, context):
         user.first_name
     )
 
-    d = get_user(user.id)
+    data = get_user(user.id)
 
     if user.id == OWNER_ID:
 
         plan = "OWNER ∞"
-
         coins = "ILIMITADO"
 
     else:
 
         plan = (
             "VIP"
-            if is_vip(d)
+            if is_vip(data)
             else "FREE"
         )
 
-        coins = d["coins"]
+        coins = data["coins"]
+
+    keyboard = InlineKeyboardMarkup([
+
+        [
+            InlineKeyboardButton(
+                "🌎 Abrir panel",
+                callback_data="panel"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "💰 Mi saldo",
+                callback_data="mycoins"
+            ),
+
+            InlineKeyboardButton(
+                "👤 Mi info",
+                callback_data="myinfo"
+            )
+        ]
+
+    ])
 
     await update.message.reply_text(
+
         "╭━━━━━━━━━━━━━━━━╮\n"
-        "     🤖 BOT TELEGRAM\n"
+        "      🤖 TELEGRAM BOT\n"
         "╰━━━━━━━━━━━━━━━━╯\n\n"
+
         f"👤 ID: {user.id}\n"
         f"⭐ PLAN: {plan}\n"
         f"🪙 COINS: {coins}\n\n"
-        "Usa /sys para abrir el panel."
+
+        "Selecciona una opción:",
+
+        reply_markup=keyboard
     )
 
 
@@ -721,28 +778,35 @@ async def start(update, context):
 # MYCOINS
 # =========================================================
 
-async def mycoins_cmd(update, context):
+async def mycoins_cmd(
+    update,
+    context
+):
 
-    d = get_user(
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
 
-    if update.effective_user.id == OWNER_ID:
+    data = get_user(user_id)
+
+    if user_id == OWNER_ID:
 
         await update.message.reply_text(
-            "👑 OWNER\n\n"
+            "╭━━━━━━━━━━━━━━╮\n"
+            "       👑 OWNER\n"
+            "╰━━━━━━━━━━━━━━╯\n\n"
             "🪙 Coins: ILIMITADOS ∞"
         )
 
         return
 
     await update.message.reply_text(
+
         "╭━━━━━━━━━━━━━━╮\n"
-        "      💰 SALDO\n"
+        "       💰 SALDO\n"
         "╰━━━━━━━━━━━━━━╯\n\n"
+
         f"⭐ Plan: "
-        f"{'VIP' if is_vip(d) else 'FREE'}\n"
-        f"🪙 Coins: {d['coins']}"
+        f"{'VIP' if is_vip(data) else 'FREE'}\n"
+        f"🪙 Coins: {data['coins']}"
     )
 
 
@@ -750,34 +814,37 @@ async def mycoins_cmd(update, context):
 # MYINFO
 # =========================================================
 
-async def myinfo_cmd(update, context):
+async def myinfo_cmd(
+    update,
+    context
+):
 
     user = update.effective_user
 
-    d = get_user(user.id)
+    data = get_user(user.id)
 
     if user.id == OWNER_ID:
-
         plan = "OWNER ∞"
-
     else:
-
         plan = (
             "VIP"
-            if is_vip(d)
+            if is_vip(data)
             else "FREE"
         )
 
     await update.message.reply_text(
+
         "╭━━━━━━━━━━━━━━━━╮\n"
         "       👤 MI INFO\n"
         "╰━━━━━━━━━━━━━━━━╯\n\n"
+
         f"🆔 ID: {user.id}\n"
-        f"👤 Nombre: {user.first_name or 'N/A'}\n"
+        f"👤 Nombre: "
+        f"{user.first_name or 'N/A'}\n"
         f"🔹 Username: "
         f"@{user.username if user.username else 'N/A'}\n"
         f"⭐ Plan: {plan}\n"
-        f"🪙 Coins: {d['coins']}"
+        f"🪙 Coins: {data['coins']}"
     )
 
 
@@ -785,12 +852,15 @@ async def myinfo_cmd(update, context):
 # ADD COINS
 # =========================================================
 
-async def addcoins_cmd(update, context):
+async def addcoins_cmd(
+    update,
+    context
+):
 
     if update.effective_user.id != OWNER_ID:
 
         await update.message.reply_text(
-            "❌ Solo OWNER."
+            "❌ Solo el OWNER puede usar este comando."
         )
 
         return
@@ -817,7 +887,6 @@ async def addcoins_cmd(update, context):
         )
 
         if amount <= 0:
-
             raise ValueError
 
     except ValueError:
@@ -833,13 +902,16 @@ async def addcoins_cmd(update, context):
         amount
     )
 
-    d = get_user(user_id)
+    data = get_user(user_id)
 
     await update.message.reply_text(
-        f"✅ Coins añadidos\n\n"
-        f"ID: {user_id}\n"
-        f"+{amount} coins\n"
-        f"Saldo: {d['coins']}"
+
+        "✅ COINS ACTUALIZADOS\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+
+        f"🆔 ID: {user_id}\n"
+        f"➕ Añadidos: {amount}\n"
+        f"💰 Saldo: {data['coins']}"
     )
 
 
@@ -847,7 +919,10 @@ async def addcoins_cmd(update, context):
 # ADD VIP
 # =========================================================
 
-async def addvip_cmd(update, context):
+async def addvip_cmd(
+    update,
+    context
+):
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -888,9 +963,12 @@ async def addvip_cmd(update, context):
     )
 
     await update.message.reply_text(
-        f"✅ VIP actualizado\n\n"
-        f"ID: {user_id}\n"
-        f"Días añadidos: {days}"
+
+        "✅ VIP ACTUALIZADO\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+
+        f"🆔 ID: {user_id}\n"
+        f"⭐ Días añadidos: {days}"
     )
 
 
@@ -898,7 +976,10 @@ async def addvip_cmd(update, context):
 # REMOVE VIP
 # =========================================================
 
-async def remvip_cmd(update, context):
+async def remvip_cmd(
+    update,
+    context
+):
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -929,8 +1010,11 @@ async def remvip_cmd(update, context):
     remove_vip(user_id)
 
     await update.message.reply_text(
-        f"✅ VIP eliminado\n"
-        f"ID: {user_id}"
+
+        "✅ VIP ELIMINADO\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+
+        f"🆔 ID: {user_id}"
     )
 
 
@@ -938,7 +1022,10 @@ async def remvip_cmd(update, context):
 # USERS
 # =========================================================
 
-async def users_cmd(update, context):
+async def users_cmd(
+    update,
+    context
+):
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -950,10 +1037,14 @@ async def users_cmd(update, context):
     ).fetchone()["c"]
 
     rows = conn.execute("""
-        SELECT user_id, username, coins, vip_until
+        SELECT
+            user_id,
+            username,
+            coins,
+            vip_until
         FROM users
         ORDER BY updated_at DESC
-        LIMIT 15
+        LIMIT 20
     """).fetchall()
 
     conn.close()
@@ -967,14 +1058,22 @@ async def users_cmd(update, context):
 
         vip = (
             "VIP"
-            if row["vip_until"] > time.time()
+            if float(row["vip_until"]) > time.time()
             else "FREE"
         )
 
+        username = (
+            f"@{row['username']}"
+            if row["username"]
+            else "sin_username"
+        )
+
         text += (
-            f"🆔 {row['user_id']} | "
-            f"{vip} | "
-            f"{row['coins']} coins\n"
+            f"🆔 {row['user_id']}\n"
+            f"👤 {username}\n"
+            f"⭐ {vip} | "
+            f"🪙 {row['coins']}\n"
+            "──────────────\n"
         )
 
     await update.message.reply_text(
@@ -986,58 +1085,8 @@ async def users_cmd(update, context):
 # STATS
 # =========================================================
 
-async def stats_cmd(update, context):
+async def stats_cmd(
+    update,
+    context
+):
 
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    conn = db_connect()
-
-    users = conn.execute(
-        "SELECT COUNT(*) AS c FROM users"
-    ).fetchone()["c"]
-
-    operations = conn.execute(
-        "SELECT COUNT(*) AS c FROM operations"
-    ).fetchone()["c"]
-
-    successful = conn.execute(
-        "SELECT COUNT(*) AS c "
-        "FROM operations WHERE success=1"
-    ).fetchone()["c"]
-
-    conn.close()
-
-    await update.message.reply_text(
-        "╭━━━━━━━━━━━━━━━━╮\n"
-        "       📊 STATS\n"
-        "╰━━━━━━━━━━━━━━━━╯\n\n"
-        f"👥 Usuarios: {users}\n"
-        f"⚙️ Operaciones: {operations}\n"
-        f"✅ Exitosas: {successful}"
-    )
-
-
-# =========================================================
-# SYS
-# =========================================================
-
-def countries_keyboard():
-
-    return InlineKeyboardMarkup([
-
-        [
-            InlineKeyboardButton(
-                "🇨🇴 COLOMBIA",
-                callback_data="country_CO"
-            ),
-
-            InlineKeyboardButton(
-                "🇵🇪 PERU",
-                callback_data="country_PE"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-       
