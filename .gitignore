@@ -1,5 +1,13 @@
 .env
+users.db
+users.json
+users.json.migrated
+
 __pycache__/
 *.pyc
-venv/
+
 .venv/
+venv/
+
+.vscode/
+.idea/
